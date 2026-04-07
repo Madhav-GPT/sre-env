@@ -1,0 +1,20 @@
+name: unified-incident-env
+version: 1.0.0
+description: >
+  Deterministic unified incident benchmark with one SRE flow, one security
+  subquest, and one final score.
+author: Daksh Verma
+license: MIT
+
+environment:
+  action_type: UnifiedIncidentAction
+  observation_type: UnifiedIncidentObservation
+  state_type: UnifiedIncidentState
+  max_steps: 20
+  difficulties: [easy, medium, hard]
+  reward_type: dense
+
+huggingface:
+  space_id: gylder/my-env
+  sdk: docker
+  hardware: cpu-basic
