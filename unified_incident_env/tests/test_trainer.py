@@ -234,7 +234,7 @@ def test_prompt_builder_is_stage_specific() -> None:
     assert "Allowed actions:" in user_prompt
     assert "- query_logs" in user_prompt
     assert "- inspect_code" not in user_prompt
-    assert "Final score: 0.0000" in user_prompt
+    assert "Final score: 0.1000" in user_prompt
     assert "Valid example:" in user_prompt
     assert response_format["type"] == "json_schema"
     assert response_format["json_schema"]["strict"] is True

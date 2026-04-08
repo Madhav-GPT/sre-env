@@ -74,8 +74,8 @@ def make_observation(**overrides: object) -> UnifiedIncidentObservation:
         "progress_flags": {},
         "security_subquest_status": "locked",
         "security_context": SecurityContext(),
-        "final_score": 0.0,
-        "score_breakdown": {},
+        "final_score": 0.1,
+        "score_breakdown": {"efficiency_score": 0.1},
         "incident_resolved": False,
         "reward": 0.0,
         "done": False,
@@ -87,12 +87,12 @@ def make_observation(**overrides: object) -> UnifiedIncidentObservation:
 def test_log_helpers_match_required_format(capsys) -> None:
     inference.log_start(task="database_sqli_outage", env="unified-incident-env", model="demo-model")
     inference.log_step(step=2, action='{"action_type":"query_logs","service":"database"}', reward=0.1, done=False, error=None)
-    inference.log_end(success=True, steps=2, rewards=[0.1, 0.27])
+    inference.log_end(success=True, steps=2, score=0.37, rewards=[0.1, 0.27])
     captured = capsys.readouterr().out.strip().splitlines()
     assert captured == [
         "[START] task=database_sqli_outage env=unified-incident-env model=demo-model",
         '[STEP] step=2 action={"action_type":"query_logs","service":"database"} reward=0.10 done=false error=null',
-        "[END] success=true steps=2 rewards=0.10,0.27",
+        "[END] success=true steps=2 score=0.37 rewards=0.10,0.27",
     ]
 
 
@@ -198,7 +198,7 @@ def test_build_user_prompt_uses_policy_card_not_recent_history() -> None:
     assert "Current goal: find the most relevant next investigation step" in prompt
     assert "Allowed actions:" in prompt
     assert "Required fields:" in prompt
-    assert "Final score: 0.0000" in prompt
+    assert "Final score: 0.1000" in prompt
     assert "Valid example:" in prompt
 
 

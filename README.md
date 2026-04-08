@@ -111,11 +111,11 @@ These mechanics are explicit in the environment state and reward function. They 
 | Scenario count | 3 |
 | Difficulty levels | Easy, Medium, Hard |
 | Public actions | 11 |
-| Score range | `0.0` to `1.0` |
+| Score range | strictly between `0.0` and `1.0` |
 | Score type | deterministic, dense, bounded |
 | Root runner | `inference.py` |
 | OpenEnv validation | passes |
-| Test suite | `51 passed` |
+| Test suite | `54 passed` |
 | Docker build | passes |
 | LLM judge | none |
 
@@ -210,7 +210,7 @@ This keeps the benchmark deterministic while still making failure states explici
 
 ## Scoring
 
-The score is deterministic and bounded between `0.0` and `1.0`.
+The public task score is deterministic and stays strictly between `0.0` and `1.0`.
 
 ```text
 final_score =
@@ -276,6 +276,7 @@ It:
 
 - uses the OpenAI client
 - reads `API_BASE_URL`, `MODEL_NAME`, and `HF_TOKEN`
+- exposes an optional `LOCAL_IMAGE_NAME` variable for docker-image-based local runs
 - emits validator-compatible `[START]`, `[STEP]`, and `[END]` logs
 - runs all 3 scenarios through the real environment API
 
@@ -402,7 +403,7 @@ Example:
 
 ```bash
 export API_BASE_URL="https://router.huggingface.co/v1"
-export MODEL_NAME="meta-llama/Llama-3.1-70B-Instruct"
+export MODEL_NAME="Qwen/Qwen2.5-72B-Instruct:novita"
 export HF_TOKEN="your_hf_token"
 python inference.py
 ```
@@ -411,7 +412,7 @@ python inference.py
 
 Current repo-level checks:
 
-- `pytest unified_incident_env/tests -q` -> `51 passed`
+- `pytest unified_incident_env/tests -q` -> `54 passed`
 - `openenv validate .` -> passes
 - `docker build -t unified-incident-env .` -> passes
 

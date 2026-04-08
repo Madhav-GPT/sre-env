@@ -804,7 +804,7 @@ _CURRENT_PROGRESS: dict = {
     "incident_resolved": False,
     "postmortem_submitted": False,
     "cumulative_reward": 0.0,
-    "cumulative_score": 0.0,
+    "cumulative_score": 0.10,
     "score_breakdown": {
         "infrastructure_score": 0.0,
         "security_score": 0.0,

@@ -4,7 +4,9 @@ from __future__ import annotations
 
 import argparse
 import json
+import shlex
 import subprocess
+import sys
 import time
 from pathlib import Path
 
@@ -49,6 +51,14 @@ class ExternalCommandUpdater:
     def __init__(self, command_template: str) -> None:
         self.command_template = command_template
 
+    def _command_for_current_python(self) -> str:
+        executable = shlex.quote(sys.executable)
+        if self.command_template.startswith("python "):
+            return executable + self.command_template[len("python") :]
+        if self.command_template.startswith("python3 "):
+            return executable + self.command_template[len("python3") :]
+        return self.command_template
+
     def update(self, request: UpdateRequest) -> UpdateResult:
         output_dir = Path(request.output_dir).resolve()
         output_dir.mkdir(parents=True, exist_ok=True)
@@ -56,7 +66,7 @@ class ExternalCommandUpdater:
         result_path = output_dir / f"update_{request.update_index:02d}_result.json"
         request_path.write_text(request.model_dump_json(indent=2), encoding="utf-8")
 
-        command = self.command_template.format(
+        command = self._command_for_current_python().format(
             output_dir=str(output_dir),
             request_path=str(request_path),
             model_before=request.model_before,

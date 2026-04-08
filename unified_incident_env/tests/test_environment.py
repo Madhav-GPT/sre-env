@@ -157,6 +157,17 @@ def test_happy_path_easy() -> None:
     assert obs.final_score < 1.0
 
 
+def test_reset_score_is_strictly_between_zero_and_one() -> None:
+    env = UnifiedIncidentEnvironment()
+    for scenario_id in (
+        "database_sqli_outage",
+        "cache_abuse_broken_access_control",
+        "worker_bad_deploy_command_injection",
+    ):
+        obs = env.reset(scenario_id=scenario_id)
+        assert 0.0 < obs.final_score < 1.0
+
+
 def test_happy_path_medium() -> None:
     env = UnifiedIncidentEnvironment()
     _solve_medium(env)

@@ -226,7 +226,7 @@ class UnifiedIncidentEnvironment(
             "workflow_stage": "diagnosis",
             "wasteful_ticks": 0,
             "cumulative_reward": 0.0,
-            "final_score": 0.0,
+            "final_score": 0.10,
             "score_breakdown": {
                 "infrastructure_score": 0.0,
                 "security_score": 0.0,
