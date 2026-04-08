@@ -168,8 +168,13 @@ _SIMPLE_CONSOLE_HTML = """<!doctype html>
         <input id="hfToken" type="password" placeholder="hf_xxx..." />
       </div>
       <div>
+        <label for="modelLabel">Model label for logs</label>
+        <input id="modelLabel" type="text" value="Qwen/Qwen2.5-72B-Instruct:novita" />
+      </div>
+      <div>
         <label for="scenarioId">Scenario ID (optional on reset)</label>
         <select id="scenarioId">
+          <option value="all" selected>all (easy + medium + hard)</option>
           <option value="">default</option>
           <option value="database_sqli_outage">database_sqli_outage (easy)</option>
           <option value="cache_abuse_broken_access_control">cache_abuse_broken_access_control (medium)</option>
@@ -193,7 +198,7 @@ _SIMPLE_CONSOLE_HTML = """<!doctype html>
 
     <pre id="terminal"></pre>
     <div class="hint">
-      Start Session runs reset + auto-steps to completion. HF token input is optional here and never persisted.
+      Start Session runs the selected scenario(s) end-to-end and emits START/STEP/END logs.
     </div>
   </div>
 
@@ -228,6 +233,33 @@ _SIMPLE_CONSOLE_HTML = """<!doctype html>
 
     function readScenario() {
       return document.getElementById("scenarioId").value.trim();
+    }
+
+    function readModelLabel() {
+      return document.getElementById("modelLabel").value.trim() || "browser-auto";
+    }
+
+    function actionToLog(action) {
+      try {
+        return JSON.stringify(action);
+      } catch {
+        return String(action);
+      }
+    }
+
+    function benchmarkScenarios(selection) {
+      const all = [
+        "database_sqli_outage",
+        "cache_abuse_broken_access_control",
+        "worker_bad_deploy_command_injection",
+      ];
+      if (!selection || selection === "all") {
+        return all;
+      }
+      if (selection === "default") {
+        return ["database_sqli_outage"];
+      }
+      return [selection];
     }
 
     async function requestJson(path, payload, method = "POST") {
@@ -296,11 +328,12 @@ _SIMPLE_CONSOLE_HTML = """<!doctype html>
       return toStepAction({ action_type: allowed[0] });
     }
 
-    async function doReset(silentStart = false) {
-      const scenario = readScenario();
+    async function doReset(silentStart = false, scenarioOverride = null, emitResetLog = true) {
+      const selectedScenario = scenarioOverride ?? readScenario();
+      const scenario = selectedScenario === "all" ? "" : selectedScenario;
       const payload = scenario ? { scenario_id: scenario } : {};
       if (!silentStart) {
-        append("[START] reset request => " + safeJson(payload));
+        append("[RESET] request => " + safeJson(payload));
       }
       try {
         const result = await requestJson("/web/reset", payload, "POST");
@@ -310,7 +343,9 @@ _SIMPLE_CONSOLE_HTML = """<!doctype html>
         }
         const reward = typeof result.data?.reward === "number" ? result.data.reward : 0;
         const done = typeof result.data?.done === "boolean" ? result.data.done : false;
-        append("[RESET] status=200 reward=" + reward + " done=" + done + " " + summarizeObservation(result.data?.observation, done));
+        if (emitResetLog) {
+          append("[RESET] status=200 reward=" + reward + " done=" + done + " " + summarizeObservation(result.data?.observation, done));
+        }
         lastObservation = result.data?.observation || null;
         lastDone = done;
         stepCounter = 0;
@@ -330,7 +365,7 @@ _SIMPLE_CONSOLE_HTML = """<!doctype html>
       }
 
       if (emitRequestLog) {
-        append("[STEP] request action=" + safeJson(stepAction));
+        append("[STEP] request action=" + actionToLog(stepAction));
       }
 
       try {
@@ -347,7 +382,7 @@ _SIMPLE_CONSOLE_HTML = """<!doctype html>
         rewardHistory.push(reward);
         lastObservation = observation;
         lastDone = done;
-        append("[STEP] step=" + stepCounter + " action=" + safeJson(stepAction) + " reward=" + reward.toFixed(2) + " done=" + String(done).toLowerCase() + " error=" + errorText);
+        append("[STEP] step=" + stepCounter + " action=" + actionToLog(stepAction) + " reward=" + reward.toFixed(2) + " done=" + String(done).toLowerCase() + " error=" + errorText);
         append("[STATE] " + summarizeObservation(observation, done));
         return result.data;
       } catch (error) {
@@ -401,16 +436,20 @@ _SIMPLE_CONSOLE_HTML = """<!doctype html>
         append("[ERROR] session already running");
         return;
       }
-      if (readToken()) {
-        append("HF token provided for your external use. This UI does not store it.");
+
+      const selected = readScenario();
+      const scenarioIds = benchmarkScenarios(selected);
+      const modelLabel = readModelLabel();
+
+      for (const scenarioId of scenarioIds) {
+        append("[START] task=" + scenarioId + " env=unified-incident-env model=" + modelLabel);
+        const resetPayload = await doReset(true, scenarioId, false);
+        if (!resetPayload) {
+          append("[END] success=false steps=0 score=0.00 rewards=");
+          continue;
+        }
+        await runAutoSession();
       }
-      const scenario = readScenario() || "default";
-      append("[START] task=" + scenario + " env=unified_incident_env model=terminal-auto");
-      const resetPayload = await doReset(true);
-      if (!resetPayload) {
-        return;
-      }
-      await runAutoSession();
     }
 
     async function doState() {
