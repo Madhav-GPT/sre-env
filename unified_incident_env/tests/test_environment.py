@@ -441,6 +441,8 @@ def test_simple_console_route_and_root_redirect(monkeypatch) -> None:
     assert "Simple Console" in simple_response.text
     assert "HF Token" in simple_response.text
     assert "Get state" in simple_response.text
+    assert "Save Token" not in simple_response.text
+    assert "never stored" in simple_response.text
 
 
 def test_web_step_autofills_missing_required_fields(monkeypatch) -> None:

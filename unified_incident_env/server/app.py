@@ -164,7 +164,7 @@ _SIMPLE_CONSOLE_HTML = """<!doctype html>
 
     <div class="grid">
       <div>
-        <label for="hfToken">HF Token (saved in this browser only)</label>
+        <label for="hfToken">HF Token (never stored by this UI)</label>
         <input id="hfToken" type="password" placeholder="hf_xxx..." />
       </div>
       <div>
@@ -183,7 +183,6 @@ _SIMPLE_CONSOLE_HTML = """<!doctype html>
     </div>
 
     <div class="btns">
-      <button class="success" onclick="saveToken()">Save Token</button>
       <button class="primary" onclick="startSession()">Start Session</button>
       <button onclick="doReset()">Reset</button>
       <button onclick="doStep()">Step</button>
@@ -194,13 +193,17 @@ _SIMPLE_CONSOLE_HTML = """<!doctype html>
 
     <pre id="terminal"></pre>
     <div class="hint">
-      Start Session triggers reset and writes a START line; Step prints STEP-style lines; State prints the current workflow snapshot.
+      Start Session runs reset + auto-steps to completion. HF token input is optional here and never persisted.
     </div>
   </div>
 
   <script>
-    const tokenKey = "my_openenv_hf_token";
     const terminal = document.getElementById("terminal");
+    let lastObservation = null;
+    let lastDone = false;
+    let stepCounter = 0;
+    let rewardHistory = [];
+    let autoRunning = false;
 
     function ts() {
       return new Date().toISOString().replace("T", " ").slice(0, 19);
@@ -225,26 +228,6 @@ _SIMPLE_CONSOLE_HTML = """<!doctype html>
 
     function readScenario() {
       return document.getElementById("scenarioId").value.trim();
-    }
-
-    function saveToken() {
-      const token = readToken();
-      if (!token) {
-        append("No HF token entered.");
-        return;
-      }
-      localStorage.setItem(tokenKey, token);
-      append("HF token saved in local browser storage.");
-    }
-
-    function loadToken() {
-      const stored = localStorage.getItem(tokenKey);
-      if (!stored) {
-        append("No saved HF token found (optional).");
-        return;
-      }
-      document.getElementById("hfToken").value = stored;
-      append("Loaded saved HF token.");
     }
 
     async function requestJson(path, payload, method = "POST") {
@@ -279,31 +262,97 @@ _SIMPLE_CONSOLE_HTML = """<!doctype html>
       return "tick=" + tick + " stage=" + stage + " final_score=" + score + " done=" + done;
     }
 
-    async function startSession() {
-      const token = readToken();
-      if (!token) {
-        append("HF token is empty. Add it first, then Start Session.");
-        return;
+    function toStepAction(rawAction) {
+      if (rawAction && typeof rawAction === "object" && rawAction.action_type === "submit_postmortem" && !rawAction.postmortem) {
+        return {
+          action_type: "submit_postmortem",
+          postmortem: {
+            root_cause: "incident documented",
+            attack_vector: "documented in run",
+            timeline: ["reset", "security subquest", "remediation", "verification"],
+            remediation_steps: ["restart affected services", "apply approved patch"],
+            prevention_steps: ["increase monitoring", "harden input validation"],
+          },
+        };
       }
-      saveToken();
-      await doReset();
+      return rawAction;
     }
 
-    async function doReset() {
+    function pickAutoAction(observation) {
+      if (!observation || typeof observation !== "object") {
+        return null;
+      }
+      const validExample = observation.valid_action_example;
+      if (validExample && typeof validExample === "object" && validExample.action_type) {
+        return toStepAction(validExample);
+      }
+      const allowed = Array.isArray(observation.allowed_actions) ? observation.allowed_actions : [];
+      if (allowed.length === 0) {
+        return null;
+      }
+      if (allowed.includes("query_logs")) {
+        return { action_type: "query_logs" };
+      }
+      return toStepAction({ action_type: allowed[0] });
+    }
+
+    async function doReset(silentStart = false) {
       const scenario = readScenario();
       const payload = scenario ? { scenario_id: scenario } : {};
-      append("[START] reset request => " + safeJson(payload));
+      if (!silentStart) {
+        append("[START] reset request => " + safeJson(payload));
+      }
       try {
-        const result = await requestJson("/reset", payload, "POST");
+        const result = await requestJson("/web/reset", payload, "POST");
         if (!result.ok) {
           append("[ERROR] reset failed status=" + result.status + " body=" + safeJson(result.data));
-          return;
+          return null;
         }
         const reward = typeof result.data?.reward === "number" ? result.data.reward : 0;
         const done = typeof result.data?.done === "boolean" ? result.data.done : false;
         append("[RESET] status=200 reward=" + reward + " done=" + done + " " + summarizeObservation(result.data?.observation, done));
+        lastObservation = result.data?.observation || null;
+        lastDone = done;
+        stepCounter = 0;
+        rewardHistory = [];
+        return result.data;
       } catch (error) {
         append("[ERROR] reset exception=" + String(error));
+        return null;
+      }
+    }
+
+    async function executeStep(action, emitRequestLog = true) {
+      const stepAction = toStepAction(action);
+      if (!stepAction || typeof stepAction !== "object" || !stepAction.action_type) {
+        append("[ERROR] invalid action object");
+        return null;
+      }
+
+      if (emitRequestLog) {
+        append("[STEP] request action=" + safeJson(stepAction));
+      }
+
+      try {
+        const result = await requestJson("/web/step", stepAction, "POST");
+        if (!result.ok) {
+          append("[ERROR] step failed status=" + result.status + " body=" + safeJson(result.data));
+          return null;
+        }
+        const reward = typeof result.data?.reward === "number" ? result.data.reward : 0;
+        const done = typeof result.data?.done === "boolean" ? result.data.done : false;
+        const observation = result.data?.observation || {};
+        const errorText = result.data?.observation?.why_failed || "null";
+        stepCounter += 1;
+        rewardHistory.push(reward);
+        lastObservation = observation;
+        lastDone = done;
+        append("[STEP] step=" + stepCounter + " action=" + safeJson(stepAction) + " reward=" + reward.toFixed(2) + " done=" + String(done).toLowerCase() + " error=" + errorText);
+        append("[STATE] " + summarizeObservation(observation, done));
+        return result.data;
+      } catch (error) {
+        append("[ERROR] step exception=" + String(error));
+        return null;
       }
     }
 
@@ -322,36 +371,69 @@ _SIMPLE_CONSOLE_HTML = """<!doctype html>
         return;
       }
 
-      const payload = (action && typeof action === "object" && "action" in action)
-        ? action
-        : { action: action };
-      append("[STEP] request action=" + safeJson(payload.action));
+      await executeStep(action, true);
+    }
 
-      try {
-        const result = await requestJson("/step", payload, "POST");
-        if (!result.ok) {
-          append("[ERROR] step failed status=" + result.status + " body=" + safeJson(result.data));
-          return;
+    async function runAutoSession() {
+      autoRunning = true;
+      const maxSteps = Math.max(1, (lastObservation?.max_ticks || 8) + 6);
+      while (!lastDone && stepCounter < maxSteps) {
+        const autoAction = pickAutoAction(lastObservation);
+        if (!autoAction) {
+          append("[ERROR] no valid next action available");
+          break;
         }
-        const reward = result.data?.reward;
-        const done = result.data?.done;
-        const errorText = result.data?.observation?.why_failed || "null";
-        append("[STEP] reward=" + reward + " done=" + done + " error=" + errorText);
-        append("[STATE] " + summarizeObservation(result.data?.observation));
-      } catch (error) {
-        append("[ERROR] step exception=" + String(error));
+        document.getElementById("actionInput").value = safeJson(autoAction);
+        const stepResult = await executeStep(autoAction, false);
+        if (!stepResult) {
+          break;
+        }
       }
+      const finalScore = Number(lastObservation?.final_score ?? 0);
+      const success = lastDone && finalScore > 0;
+      const rewardsStr = rewardHistory.map((r) => Number(r).toFixed(2)).join(",");
+      append("[END] success=" + String(success).toLowerCase() + " steps=" + stepCounter + " score=" + finalScore.toFixed(2) + " rewards=" + rewardsStr);
+      autoRunning = false;
+    }
+
+    async function startSession() {
+      if (autoRunning) {
+        append("[ERROR] session already running");
+        return;
+      }
+      if (readToken()) {
+        append("HF token provided for your external use. This UI does not store it.");
+      }
+      const scenario = readScenario() || "default";
+      append("[START] task=" + scenario + " env=unified_incident_env model=terminal-auto");
+      const resetPayload = await doReset(true);
+      if (!resetPayload) {
+        return;
+      }
+      await runAutoSession();
     }
 
     async function doState() {
-      append("[STATE] request /state");
+      append("[STATE] request /web/state");
       try {
-        const result = await requestJson("/state", null, "GET");
+        const result = await requestJson("/web/state", null, "GET");
         if (!result.ok) {
-          append("[ERROR] state failed status=" + result.status + " body=" + safeJson(result.data));
+          append("[ERROR] /web/state failed status=" + result.status + " body=" + safeJson(result.data));
+          const fallback = await requestJson("/state", null, "GET");
+          if (!fallback.ok) {
+            append("[ERROR] /state fallback failed status=" + fallback.status + " body=" + safeJson(fallback.data));
+            return;
+          }
+          append("[STATE] fallback step_count=" + fallback.data?.step_count);
+          append(safeJson(fallback.data));
           return;
         }
-        append("[STATE] step_count=" + result.data?.step_count + " workflow_stage=" + result.data?.workflow_stage + " scenario=" + result.data?.scenario_id);
+        append(
+          "[STATE] step_count=" + result.data?.step_count +
+          " workflow_stage=" + result.data?.workflow_stage +
+          " scenario=" + result.data?.scenario_id +
+          " difficulty=" + result.data?.difficulty
+        );
         append(safeJson(result.data));
       } catch (error) {
         append("[ERROR] state exception=" + String(error));
@@ -362,8 +444,7 @@ _SIMPLE_CONSOLE_HTML = """<!doctype html>
       terminal.textContent = "";
     }
 
-    loadToken();
-    append("Simple console ready.");
+    append("Simple console ready. Token is optional and never saved.");
   </script>
 </body>
 </html>
