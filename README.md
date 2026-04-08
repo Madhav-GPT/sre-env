@@ -14,12 +14,27 @@ A deterministic OpenEnv benchmark where agents resolve production incidents whos
 
 `unified_incident_env` is one judge-facing environment. It is not a collection of mini-projects and it is not a toy task. Each episode starts as an operational outage, but the correct solution requires the agent to bridge SRE investigation with security remediation, then recover the system in the correct order and submit a postmortem.
 
+## Latest Model Scores
+
+Latest full `python inference.py` run (April 8, 2026) with:
+
+- `MODEL_NAME=Qwen/Qwen2.5-72B-Instruct:novita`
+- `API_BASE_URL=https://router.huggingface.co/v1`
+- `ENV_BASE_URL=http://127.0.0.1:8000`
+
+| Scenario | Difficulty | Score | Success |
+| --- | --- | ---: | --- |
+| `database_sqli_outage` | Easy | `0.42` | `false` |
+| `cache_abuse_broken_access_control` | Medium | `0.93` | `true` |
+| `worker_bad_deploy_command_injection` | Hard | `0.92` | `true` |
+| **Mean** | - | **`0.76`** | **`2/3`** |
+
 ## Submission Snapshot
 
 Hackathon submission targets:
 
-- GitHub repository: `https://github.com/dakshdoesdev/my-openenv`
-- Hugging Face Space: `https://huggingface.co/spaces/gylder/my-env`
+- GitHub repository: `https://github.com/Madhav-GPT/my-openenv`
+- Hugging Face Space: `https://huggingface.co/spaces/Madhav189/my-env`
 
 Submission-critical root files:
 
@@ -115,9 +130,11 @@ These mechanics are explicit in the environment state and reward function. They 
 | Score type | deterministic, dense, bounded |
 | Root runner | `inference.py` |
 | OpenEnv validation | passes |
-| Test suite | `54 passed` |
+| Test suite | `59 passed` |
 | Docker build | passes |
 | LLM judge | none |
+| Default web entry | `/simple` (terminal-style) |
+| Advanced web entry | `/web/` |
 
 ## Scenario Pack
 
@@ -367,6 +384,11 @@ Run the environment locally:
 uvicorn server.app:app --host 0.0.0.0 --port 8000
 ```
 
+Web UI paths:
+
+- `http://127.0.0.1:8000/simple` (default terminal-style flow, START/STEP/END logs)
+- `http://127.0.0.1:8000/web/` (advanced OpenEnv UI)
+
 Run the root inference script:
 
 ```bash
@@ -412,15 +434,15 @@ python inference.py
 
 Current repo-level checks:
 
-- `pytest unified_incident_env/tests -q` -> `54 passed`
-- `openenv validate .` -> passes
+- `pytest unified_incident_env/tests -q` -> `59 passed`
+- `./.venv/bin/openenv validate .` -> `[OK] : Ready for multi-mode deployment`
 - `docker build -t unified-incident-env .` -> passes
 
 ## Hugging Face Space
 
 Configured Space URL:
 
-- `https://huggingface.co/spaces/gylder/my-env`
+- `https://huggingface.co/spaces/Madhav189/my-env`
 
 The repo is structured for a Docker-based Hugging Face Space via `openenv.yaml`.
 
