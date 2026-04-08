@@ -443,3 +443,35 @@ def test_web_step_autofills_missing_required_fields(monkeypatch) -> None:
     assert payload["reward"] == 0.05
     assert payload["observation"]["workflow_stage"] == "security_subquest"
     assert "query_logs returned data for database" in payload["observation"]["last_action_result"]
+
+
+def test_step_autofills_missing_query_logs_service(monkeypatch) -> None:
+    monkeypatch.setenv("ENABLE_WEB_INTERFACE", "true")
+    client = TestClient(app_module.create_compatible_app())
+    reset_response = client.post("/reset", json={})
+    assert reset_response.status_code == 200
+
+    step_response = client.post(
+        "/step",
+        json={"action": {"action_type": "query_logs"}},
+    )
+    assert step_response.status_code == 200
+    payload = step_response.json()
+    assert payload["reward"] == 0.05
+    assert payload["observation"]["workflow_stage"] == "security_subquest"
+
+
+def test_step_returns_json_422_for_missing_metric(monkeypatch) -> None:
+    monkeypatch.setenv("ENABLE_WEB_INTERFACE", "true")
+    client = TestClient(app_module.create_compatible_app())
+    reset_response = client.post("/reset", json={})
+    assert reset_response.status_code == 200
+
+    step_response = client.post(
+        "/step",
+        json={"action": {"action_type": "query_metrics", "service": "database"}},
+    )
+    assert step_response.status_code == 422
+    payload = step_response.json()
+    assert payload["detail"][0]["type"] == "missing_metric"
+    assert payload["detail"][0]["msg"] == "metric is required for query_metrics"

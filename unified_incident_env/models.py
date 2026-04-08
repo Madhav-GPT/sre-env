@@ -6,6 +6,7 @@ from typing import Any, Literal
 
 from openenv.core import Action, Observation, State
 from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic_core import PydanticCustomError
 
 ActionType = Literal[
     "query_logs",
@@ -65,6 +66,19 @@ class UnifiedIncidentAction(Action):
     patch_id: str | None = None
     postmortem: PostmortemPayload | None = None
 
+    @model_validator(mode="before")
+    @classmethod
+    def _autofill_common_shorthand(cls, data: Any) -> Any:
+        if not isinstance(data, dict):
+            return data
+
+        action_type = data.get("action_type")
+        if action_type == "query_logs" and not data.get("service"):
+            filled = dict(data)
+            filled["service"] = "database"
+            return filled
+        return data
+
     @model_validator(mode="after")
     def _validate_payload(self) -> "UnifiedIncidentAction":
         if self.action_type in {
@@ -73,23 +87,45 @@ class UnifiedIncidentAction(Action):
             "restart_service",
             "rollback_deploy",
         } and not self.service:
-            raise ValueError(f"service is required for {self.action_type}")
+            raise PydanticCustomError(
+                "missing_service",
+                "service is required for {action_type}",
+                {"action_type": self.action_type},
+            )
         if self.action_type == "query_metrics":
             if not self.service:
-                raise ValueError("service is required for query_metrics")
+                raise PydanticCustomError(
+                    "missing_service",
+                    "service is required for {action_type}",
+                    {"action_type": "query_metrics"},
+                )
             if not self.metric:
-                raise ValueError("metric is required for query_metrics")
+                raise PydanticCustomError(
+                    "missing_metric",
+                    "metric is required for {action_type}",
+                    {"action_type": "query_metrics"},
+                )
         if (
             self.action_type == "classify_vulnerability"
             and self.vulnerability_type is None
         ):
-            raise ValueError(
-                "vulnerability_type is required for classify_vulnerability"
+            raise PydanticCustomError(
+                "missing_vulnerability_type",
+                "vulnerability_type is required for {action_type}",
+                {"action_type": "classify_vulnerability"},
             )
         if self.action_type == "apply_patch" and not self.patch_id:
-            raise ValueError("patch_id is required for apply_patch")
+            raise PydanticCustomError(
+                "missing_patch_id",
+                "patch_id is required for {action_type}",
+                {"action_type": "apply_patch"},
+            )
         if self.action_type == "submit_postmortem" and self.postmortem is None:
-            raise ValueError("postmortem is required for submit_postmortem")
+            raise PydanticCustomError(
+                "missing_postmortem",
+                "postmortem is required for {action_type}",
+                {"action_type": "submit_postmortem"},
+            )
         return self
 
 
