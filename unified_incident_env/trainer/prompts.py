@@ -109,7 +109,8 @@ def build_runtime_request(
     required_fields = observation.required_fields_by_action or {
         action: REQUIRED_FIELDS[action] for action in allowed_actions
     }
-    example = teacher_action or observation.valid_action_example or _default_example(stage, observation)
+    del teacher_action
+    example = observation.valid_action_example or _default_example(stage, observation)
     if example.get("action_type") not in allowed_actions:
         example = _default_example(stage, observation)
     user_prompt = _build_user_prompt(
@@ -117,7 +118,7 @@ def build_runtime_request(
         allowed_actions,
         required_fields,
         example=example,
-        correction_hint=correction_memory_text.strip() or None,
+        correction_hint=None if strict else correction_memory_text.strip() or None,
     )
 
     response_format = _response_format_for_actions(observation, allowed_actions)

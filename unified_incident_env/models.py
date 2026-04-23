@@ -1,4 +1,4 @@
-"""Typed models for the final preset-based unified incident environment."""
+"""Typed models for the honest narrow incident-remediation environment."""
 
 from __future__ import annotations
 
@@ -12,38 +12,42 @@ ActionType = Literal[
     "query_logs",
     "query_metrics",
     "query_dependencies",
-    "restart_service",
+    "query_deploys",
     "rollback_deploy",
-    "inspect_code",
-    "classify_vulnerability",
-    "apply_patch",
-    "verify_security_fix",
-    "submit_security_fix",
-    "submit_postmortem",
+    "restart_service",
+    "run_check",
+    "isolate_service",
+    "escalate",
+    "submit_hypothesis",
+    "declare_resolved",
 ]
-Difficulty = Literal["easy", "medium", "hard"]
-MetricName = Literal["cpu", "memory", "latency", "error_rate", "throughput"]
+Difficulty = Literal["easy"]
+MetricName = Literal["cpu", "error_rate", "latency"]
 ServiceName = Literal["api-gateway", "cache", "database", "worker"]
-ServiceStatus = Literal["healthy", "degraded", "crashed"]
-WorkflowStage = Literal[
-    "diagnosis",
-    "root_cause_analysis",
-    "security_subquest",
-    "remediation",
-    "verification",
-    "postmortem",
-    "done",
+ServiceStatus = Literal["healthy", "degraded", "crashed", "isolated"]
+WorkflowStage = Literal["triage", "mitigation", "validation", "resolved"]
+CheckName = Literal["database_recovery", "end_to_end"]
+RootCauseType = Literal[
+    "bad_worker_deploy",
+    "database_only_failure",
+    "api_gateway_fault",
 ]
-SecuritySubquestStatus = Literal["locked", "active", "completed"]
-VulnerabilityType = Literal[
-    "sql_injection",
-    "broken_access_control",
-    "command_injection",
+RecommendedActionType = Literal[
+    "query_logs",
+    "query_metrics",
+    "query_dependencies",
+    "query_deploys",
+    "rollback_deploy",
+    "restart_service",
+    "run_check",
+    "isolate_service",
+    "escalate",
+    "declare_resolved",
 ]
 
 
 class PostmortemPayload(BaseModel):
-    """Structured postmortem payload used by the final action."""
+    """Deprecated compatibility shell for the removed v1 postmortem action."""
 
     model_config = ConfigDict(extra="forbid")
 
@@ -54,79 +58,27 @@ class PostmortemPayload(BaseModel):
     prevention_steps: list[str] = Field(default_factory=list)
 
 
-class UnifiedIncidentAction(Action):
-    """One structured environment action."""
+class SecurityContext(BaseModel):
+    """Deprecated compatibility shell for the removed v1 security subquest state."""
 
-    model_config = ConfigDict(extra="ignore")
+    model_config = ConfigDict(extra="forbid")
 
-    action_type: ActionType
-    service: ServiceName | None = None
-    metric: MetricName | None = None
-    vulnerability_type: VulnerabilityType | None = None
-    patch_id: str | None = None
-    postmortem: PostmortemPayload | None = None
+    code_visible: bool = False
+    selected_vulnerability: str | None = None
+    selected_patch: str | None = None
+    exploit_blocked: bool | None = None
+    functionality_preserved: bool | None = None
 
-    @model_validator(mode="before")
-    @classmethod
-    def _autofill_common_shorthand(cls, data: Any) -> Any:
-        if not isinstance(data, dict):
-            return data
 
-        action_type = data.get("action_type")
-        if action_type == "query_logs" and not data.get("service"):
-            filled = dict(data)
-            filled["service"] = "database"
-            return filled
-        return data
+class HypothesisPayload(BaseModel):
+    """Structured hypothesis submitted by the agent."""
 
-    @model_validator(mode="after")
-    def _validate_payload(self) -> "UnifiedIncidentAction":
-        if self.action_type in {
-            "query_logs",
-            "query_dependencies",
-            "restart_service",
-            "rollback_deploy",
-        } and not self.service:
-            raise PydanticCustomError(
-                "missing_service",
-                "service is required for {action_type}",
-                {"action_type": self.action_type},
-            )
-        if self.action_type == "query_metrics":
-            if not self.service:
-                raise PydanticCustomError(
-                    "missing_service",
-                    "service is required for {action_type}",
-                    {"action_type": "query_metrics"},
-                )
-            if not self.metric:
-                raise PydanticCustomError(
-                    "missing_metric",
-                    "metric is required for {action_type}",
-                    {"action_type": "query_metrics"},
-                )
-        if (
-            self.action_type == "classify_vulnerability"
-            and self.vulnerability_type is None
-        ):
-            raise PydanticCustomError(
-                "missing_vulnerability_type",
-                "vulnerability_type is required for {action_type}",
-                {"action_type": "classify_vulnerability"},
-            )
-        if self.action_type == "apply_patch" and not self.patch_id:
-            raise PydanticCustomError(
-                "missing_patch_id",
-                "patch_id is required for {action_type}",
-                {"action_type": "apply_patch"},
-            )
-        if self.action_type == "submit_postmortem" and self.postmortem is None:
-            raise PydanticCustomError(
-                "missing_postmortem",
-                "postmortem is required for {action_type}",
-                {"action_type": "submit_postmortem"},
-            )
-        return self
+    model_config = ConfigDict(extra="forbid")
+
+    root_cause: RootCauseType
+    affected_services: list[ServiceName] = Field(default_factory=list, min_length=1)
+    confidence: float = Field(ge=0.0, le=1.0)
+    recommended_next_action: RecommendedActionType
 
 
 class ServiceHealth(BaseModel):
@@ -152,25 +104,68 @@ class Alert(BaseModel):
     message: str
 
 
-class SecurityContext(BaseModel):
-    """Structured security subquest context."""
+class CheckResult(BaseModel):
+    """Result of a verification check."""
 
     model_config = ConfigDict(extra="forbid")
 
-    code_visible: bool = False
-    selected_vulnerability: VulnerabilityType | None = None
-    selected_patch: str | None = None
-    exploit_blocked: bool | None = None
-    functionality_preserved: bool | None = None
+    name: CheckName
+    passed: bool
+    detail: str
 
 
-class PatchOption(BaseModel):
-    """One security patch option."""
+class UnifiedIncidentAction(Action):
+    """One structured environment action."""
 
-    model_config = ConfigDict(extra="forbid")
+    model_config = ConfigDict(extra="ignore")
 
-    id: str
-    label: str
+    action_type: ActionType
+    service: ServiceName | None = None
+    metric: MetricName | None = None
+    check_name: CheckName | None = None
+    hypothesis: HypothesisPayload | None = None
+
+    @model_validator(mode="after")
+    def _validate_payload(self) -> "UnifiedIncidentAction":
+        if self.action_type in {
+            "query_logs",
+            "query_dependencies",
+            "query_deploys",
+            "rollback_deploy",
+            "restart_service",
+            "isolate_service",
+        } and not self.service:
+            raise PydanticCustomError(
+                "missing_service",
+                "service is required for {action_type}",
+                {"action_type": self.action_type},
+            )
+        if self.action_type == "query_metrics":
+            if not self.service:
+                raise PydanticCustomError(
+                    "missing_service",
+                    "service is required for {action_type}",
+                    {"action_type": self.action_type},
+                )
+            if not self.metric:
+                raise PydanticCustomError(
+                    "missing_metric",
+                    "metric is required for {action_type}",
+                    {"action_type": self.action_type},
+                )
+        if self.action_type == "run_check" and not self.check_name:
+            raise PydanticCustomError(
+                "missing_check_name",
+                "check_name is required for {action_type}",
+                {"action_type": self.action_type},
+            )
+        if self.action_type == "submit_hypothesis" and self.hypothesis is None:
+            raise PydanticCustomError(
+                "missing_hypothesis",
+                "hypothesis is required for {action_type}",
+                {"action_type": self.action_type},
+            )
+        return self
 
 
 class UnifiedIncidentObservation(Observation):
@@ -179,12 +174,20 @@ class UnifiedIncidentObservation(Observation):
     model_config = ConfigDict(extra="forbid")
 
     prompt_text: str
+    incident_summary: str
     tick_count: int
     max_ticks: int
     difficulty: Difficulty
     workflow_stage: WorkflowStage
     active_alerts: list[Alert] = Field(default_factory=list)
     service_health: dict[str, ServiceHealth] = Field(default_factory=dict)
+    discovered_evidence: list[str] = Field(default_factory=list)
+    recent_deploys: list[str] = Field(default_factory=list)
+    checks: list[CheckResult] = Field(default_factory=list)
+    user_impact: float = Field(ge=0.0, le=1.0)
+    slo_burn_rate: float = Field(ge=0.0, le=1.0)
+    incident_resolved: bool = False
+    containment_applied: bool = False
     last_action_result: str = ""
     tool_output: str | None = None
     failure_type: str | None = None
@@ -198,11 +201,10 @@ class UnifiedIncidentObservation(Observation):
     security_unlock_reason: str | None = None
     best_recovery_action_family: str | None = None
     progress_flags: dict[str, bool] = Field(default_factory=dict)
-    security_subquest_status: SecuritySubquestStatus = "locked"
-    security_context: SecurityContext = Field(default_factory=SecurityContext)
+    security_subquest_status: str | None = None
+    security_context: dict[str, Any] = Field(default_factory=dict)
     final_score: float = 0.0
     score_breakdown: dict[str, float] = Field(default_factory=dict)
-    incident_resolved: bool = False
     reward: float = 0.0
     done: bool = False
 
@@ -222,35 +224,23 @@ class UnifiedIncidentState(State):
     active_alerts: list[Alert] = Field(default_factory=list)
     service_health: dict[str, ServiceHealth] = Field(default_factory=dict)
     discovered_evidence: list[str] = Field(default_factory=list)
-    identified_root_cause: str | None = None
-    failure_type: str | None = None
-    why_failed: str | None = None
+    recent_deploys: list[str] = Field(default_factory=list)
+    checks: list[CheckResult] = Field(default_factory=list)
+    user_impact: float = Field(ge=0.0, le=1.0)
+    slo_burn_rate: float = Field(ge=0.0, le=1.0)
+    incident_resolved: bool = False
+    containment_applied: bool = False
     allowed_actions: list[str] = Field(default_factory=list)
     required_fields_by_action: dict[str, list[str]] = Field(default_factory=dict)
     valid_action_example: dict[str, Any] | None = None
-    common_trap: str | None = None
-    loop_warning: str | None = None
-    blocked_until_security_complete: bool = False
-    security_unlock_reason: str | None = None
-    best_recovery_action_family: str | None = None
     progress_flags: dict[str, bool] = Field(default_factory=dict)
-    security_subquest_status: SecuritySubquestStatus = "locked"
-    security_context: SecurityContext = Field(default_factory=SecurityContext)
-    relevant_investigations: int = 0
-    correct_infra_steps: int = 0
-    infra_restored_in_correct_order: bool = False
-    selected_vulnerability: VulnerabilityType | None = None
-    selected_patch: str | None = None
-    exploit_blocked: bool | None = None
-    functionality_preserved: bool | None = None
-    security_fix_submitted: bool = False
-    incident_resolved: bool = False
-    postmortem_submitted: bool = False
-    cumulative_reward: float = 0.0
-    cumulative_score: float = 0.0
+    final_score: float = 0.0
     score_breakdown: dict[str, float] = Field(default_factory=dict)
+    cumulative_reward: float = 0.0
     wasteful_ticks: int = 0
     last_action_result: str = ""
+    failure_type: str | None = None
+    why_failed: str | None = None
 
 
 class ScenarioSummary(BaseModel):

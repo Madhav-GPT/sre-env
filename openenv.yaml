@@ -1,8 +1,9 @@
 name: unified-incident-env
-version: 1.0.0
+version: 2.0.0
 description: >
-  Deterministic unified incident benchmark with one SRE flow, one security
-  subquest, and one final score.
+  Honest narrow OpenEnv benchmark for incident diagnosis and safe remediation.
+  Agents query evidence, choose bounded remediation actions, run explicit checks,
+  and declare resolution only after objective recovery succeeds.
 author: Daksh Verma
 license: MIT
 
@@ -10,8 +11,8 @@ environment:
   action_type: UnifiedIncidentAction
   observation_type: UnifiedIncidentObservation
   state_type: UnifiedIncidentState
-  max_steps: 20
-  difficulties: [easy, medium, hard]
+  max_steps: 12
+  difficulties: [easy]
   reward_type: dense
 
 huggingface:

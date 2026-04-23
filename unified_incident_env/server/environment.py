@@ -1,4 +1,4 @@
-"""Core environment for the final deterministic preset pack."""
+"""Honest narrow incident-remediation environment core."""
 
 from __future__ import annotations
 
@@ -10,9 +10,8 @@ from openenv.core.env_server import Environment
 from openenv.core.env_server.types import EnvironmentMetadata
 
 from ..models import (
-    ActionType,
     Alert,
-    SecurityContext,
+    CheckResult,
     ServiceHealth,
     UnifiedIncidentAction,
     UnifiedIncidentObservation,
@@ -22,40 +21,42 @@ from .challenge import DEFAULT_SCENARIO_ID, SCENARIOS, get_scenario, scenario_fo
 from .grader import UnifiedIncidentGrader
 
 SERVICE_ORDER = ("api-gateway", "cache", "database", "worker")
-STAGE_ALLOWED_ACTIONS: dict[str, list[ActionType]] = {
-    "diagnosis": ["query_logs", "query_metrics", "query_dependencies"],
-    "root_cause_analysis": ["query_logs", "query_metrics", "query_dependencies"],
-    "security_subquest": [
-        "inspect_code",
-        "classify_vulnerability",
-        "apply_patch",
-        "verify_security_fix",
-        "submit_security_fix",
-    ],
-    "remediation": ["restart_service", "rollback_deploy"],
-    "verification": ["submit_security_fix", "restart_service", "rollback_deploy"],
-    "postmortem": ["submit_postmortem"],
-    "done": [],
-}
+ALL_ACTIONS = [
+    "query_logs",
+    "query_metrics",
+    "query_dependencies",
+    "query_deploys",
+    "rollback_deploy",
+    "restart_service",
+    "run_check",
+    "isolate_service",
+    "escalate",
+    "submit_hypothesis",
+    "declare_resolved",
+]
 REQUIRED_FIELDS_BY_ACTION: dict[str, list[str]] = {
     "query_logs": ["service"],
     "query_metrics": ["service", "metric"],
     "query_dependencies": ["service"],
-    "restart_service": ["service"],
+    "query_deploys": ["service"],
     "rollback_deploy": ["service"],
-    "inspect_code": [],
-    "classify_vulnerability": ["vulnerability_type"],
-    "apply_patch": ["patch_id"],
-    "verify_security_fix": [],
-    "submit_security_fix": [],
-    "submit_postmortem": ["postmortem"],
+    "restart_service": ["service"],
+    "run_check": ["check_name"],
+    "isolate_service": ["service"],
+    "escalate": [],
+    "submit_hypothesis": ["hypothesis"],
+    "declare_resolved": [],
+}
+STATUS_VALUES = {
+    "healthy": 1.0,
+    "degraded": 0.4,
+    "crashed": 0.0,
+    "isolated": 0.2,
 }
 
 
-class UnifiedIncidentEnvironment(
-    Environment[UnifiedIncidentAction, UnifiedIncidentObservation, UnifiedIncidentState]
-):
-    """Deterministic unified incident-response environment."""
+class UnifiedIncidentEnvironment(Environment[UnifiedIncidentAction, UnifiedIncidentObservation, UnifiedIncidentState]):
+    """A bounded-action incident diagnosis and safe remediation environment."""
 
     SUPPORTS_CONCURRENT_SESSIONS = False
 
@@ -69,19 +70,14 @@ class UnifiedIncidentEnvironment(
         return EnvironmentMetadata(
             name="unified_incident_env",
             description=(
-                "A deterministic unified incident benchmark with one SRE flow, "
-                "one security subquest, and one final score."
+                "A narrow incident diagnosis and safe remediation environment with bounded actions, "
+                "world-state transitions, explicit checks, and effect-based rewards."
             ),
-            version="1.0.0",
+            version="2.0.0",
             author="Daksh Verma",
         )
 
-    def reset(
-        self,
-        seed: int | None = None,
-        episode_id: str | None = None,
-        **kwargs: Any,
-    ) -> UnifiedIncidentObservation:
+    def reset(self, seed: int | None = None, episode_id: str | None = None, **kwargs: Any) -> UnifiedIncidentObservation:
         del seed
         scenario_id = kwargs.get("scenario_id")
         difficulty = kwargs.get("difficulty")
@@ -100,12 +96,7 @@ class UnifiedIncidentEnvironment(
             done=False,
         )
 
-    def step(
-        self,
-        action: UnifiedIncidentAction | dict[str, Any],
-        timeout_s: float | None = None,
-        **kwargs: Any,
-    ) -> UnifiedIncidentObservation:
+    def step(self, action: UnifiedIncidentAction | dict[str, Any], timeout_s: float | None = None, **kwargs: Any) -> UnifiedIncidentObservation:
         del timeout_s, kwargs
         if isinstance(action, dict):
             action = UnifiedIncidentAction(**action)
@@ -120,72 +111,99 @@ class UnifiedIncidentEnvironment(
 
         self._episode["tick"] += 1
         self._episode["step_count"] += 1
-        self._clear_teaching_feedback()
-
-        reward = 0.0
+        before_potential = self._incident_health_potential()
+        base_step_cost = float(self._episode["scenario"]["reward_config"]["step_cost"])
+        penalty = 0.0
+        bonus = 0.0
         tool_output: str | None = None
-        progressed = False
+        state_changed = False
+        useful_observation = False
 
-        if action.action_type in {"query_logs", "query_metrics", "query_dependencies"}:
-            reward, last_action_result, tool_output, progressed = self._handle_investigation(action)
-        elif action.action_type in {"inspect_code", "classify_vulnerability", "apply_patch", "verify_security_fix", "submit_security_fix"}:
-            reward, last_action_result, tool_output, progressed = self._handle_security(action)
-        elif action.action_type in {"restart_service", "rollback_deploy"}:
-            reward, last_action_result, progressed = self._handle_infrastructure(action)
-        elif action.action_type == "submit_postmortem":
-            reward, last_action_result, progressed = self._handle_postmortem(action)
+        self._episode["failure_type"] = None
+        self._episode["why_failed"] = None
+        self._episode["loop_warning"] = None
+
+        if action.action_type == "query_logs":
+            tool_output = self._query_logs(action.service)
+            useful_observation = self._mark_evidence_once(f"logs:{action.service}", tool_output)
+            last_action_result = f"Queried logs for {action.service}."
+        elif action.action_type == "query_metrics":
+            tool_output = self._query_metrics(action.service, action.metric)
+            useful_observation = self._mark_evidence_once(f"metrics:{action.service}:{action.metric}", tool_output)
+            last_action_result = f"Queried {action.metric} for {action.service}."
+        elif action.action_type == "query_dependencies":
+            tool_output = self._query_dependencies(action.service)
+            useful_observation = self._mark_evidence_once(f"deps:{action.service}", tool_output)
+            last_action_result = f"Queried dependencies for {action.service}."
+        elif action.action_type == "query_deploys":
+            tool_output = self._query_deploys(action.service)
+            useful_observation = self._mark_evidence_once(f"deploys:{action.service}", tool_output)
+            last_action_result = f"Queried deploy history for {action.service}."
+        elif action.action_type == "submit_hypothesis":
+            bonus, useful_observation, last_action_result = self._submit_hypothesis(action)
+        elif action.action_type == "rollback_deploy":
+            state_changed, penalty, last_action_result = self._rollback_deploy(action.service)
+        elif action.action_type == "restart_service":
+            state_changed, penalty, last_action_result = self._restart_service(action.service)
+        elif action.action_type == "isolate_service":
+            state_changed, penalty, last_action_result = self._isolate_service(action.service)
+        elif action.action_type == "run_check":
+            tool_output, useful_observation, last_action_result = self._run_check(action.check_name)
+        elif action.action_type == "escalate":
+            useful_observation = self._mark_evidence_once(
+                f"escalate:{self._episode['tick']}",
+                "Escalation note recorded: expert attention requested while keeping the environment state unchanged.",
+            )
+            last_action_result = "Escalated for human attention."
+            tool_output = "Escalation does not fix the incident, but records that expert attention was requested."
+        elif action.action_type == "declare_resolved":
+            resolved, penalty, bonus, last_action_result = self._declare_resolved()
+            state_changed = resolved
         else:
             last_action_result = f"Unsupported action {action.action_type!r}."
-            self._set_failure(
-                failure_type="unsupported_action",
-                why_failed="The action is not part of the public environment schema.",
-            )
+            penalty += self._unsafe_penalty()
+            self._set_failure("unsupported_action", "That action is not part of this honest narrow environment.")
 
-        if not progressed:
+        self._advance_world()
+        self._refresh_alerts()
+        self._update_loop_feedback(action, useful_observation or state_changed)
+        after_potential = self._incident_health_potential()
+
+        reward = -base_step_cost + (after_potential - before_potential) + bonus - penalty
+        if not useful_observation and not state_changed and bonus <= 0.0:
             self._episode["wasteful_ticks"] += 1
-        self._update_loop_feedback(action, progressed)
 
-        self._update_workflow_stage()
-        self._episode["score_breakdown"] = self._grader.compute_breakdown(
-            self._state_dict(),
-            self._episode["scenario"],
-        )
-        self._episode["final_score"] = self._episode["score_breakdown"]["final_score"]
-        self._episode["cumulative_reward"] = round(
-            self._episode["cumulative_reward"] + reward,
-            4,
-        )
-        self._episode["last_action_result"] = last_action_result
-
-        done = False
-        if self._episode["postmortem_submitted"]:
-            self._episode["workflow_stage"] = "done"
+        if self._episode["tick"] >= self._episode["max_ticks"] and not self._episode["done"]:
             self._episode["done"] = True
-            done = True
-        elif self._episode["tick"] >= self._episode["max_ticks"]:
-            self._episode["done"] = True
-            done = True
             last_action_result = f"{last_action_result} Tick budget exhausted.".strip()
-            self._episode["last_action_result"] = last_action_result
+
+        self._episode["last_action_result"] = last_action_result
+        self._episode["workflow_stage"] = self._workflow_stage()
+        self._episode["score_breakdown"] = self._grader.compute_breakdown(self._state_dict(), self._episode["scenario"])
+        self._episode["final_score"] = self._episode["score_breakdown"]["final_score"]
+        self._episode["cumulative_reward"] = round(self._episode["cumulative_reward"] + reward, 4)
 
         set_runtime_progress(self._state_dict())
         return self._build_observation(
             last_action_result=last_action_result,
             tool_output=tool_output,
-            reward=reward,
-            done=done,
+            reward=round(reward, 4),
+            done=self._episode["done"],
         )
 
     @property
     def state(self) -> UnifiedIncidentState:
         return UnifiedIncidentState(**self._state_dict())
 
-    def _make_episode(self, scenario: dict, episode_id: str | None = None) -> dict[str, Any]:
+    def _make_episode(self, scenario: dict[str, Any], episode_id: str | None = None) -> dict[str, Any]:
         services = {
             name: ServiceHealth(name=name, **payload)
             for name, payload in scenario["initial_services"].items()
         }
-        alerts = [Alert(**payload) for payload in scenario["initial_alerts"]]
+        checks = {
+            "database_recovery": CheckResult(name="database_recovery", passed=False, detail="Database recovery has not been verified yet."),
+            "end_to_end": CheckResult(name="end_to_end", passed=False, detail="End-to-end health has not been verified yet."),
+        }
         return {
             "episode_id": episode_id or str(uuid.uuid4()),
             "scenario": scenario,
@@ -194,664 +212,351 @@ class UnifiedIncidentEnvironment(
             "max_ticks": scenario["max_ticks"],
             "difficulty": scenario["difficulty"],
             "services": services,
-            "alerts": alerts,
+            "alerts": [Alert(**payload) for payload in scenario["initial_alerts"]],
             "discovered_evidence": [],
-            "matched_evidence_ids": set(),
-            "relevant_investigations": 0,
-            "identified_root_cause": None,
+            "evidence_seen": set(),
+            "recent_deploys": [scenario["deploy_history"]["worker"]],
+            "checks": checks,
+            "user_impact": 0.82,
+            "slo_burn_rate": 0.91,
+            "containment_applied": False,
+            "cause_removed": False,
+            "worker_isolated": False,
+            "worker_version": "worker@2026.04.23-bad",
+            "hypothesis_seen": set(),
             "failure_type": None,
             "why_failed": None,
-            "common_trap": scenario.get("common_trap"),
             "loop_warning": None,
-            "blocked_until_security_complete": False,
-            "security_unlock_reason": None,
-            "best_recovery_action_family": None,
             "last_action_key": None,
-            "repeated_no_progress_count": 0,
-            "security_subquest_status": "locked",
-            "security_context": SecurityContext(
-                code_visible=False,
-                selected_vulnerability=None,
-                selected_patch=None,
-                exploit_blocked=None,
-                functionality_preserved=None,
-            ),
-            "security_fix_submitted": False,
+            "repeat_count": 0,
             "incident_resolved": False,
-            "postmortem_submitted": False,
-            "postmortem_score": 0.0,
-            "infra_progress": 0,
-            "correct_infra_steps": 0,
-            "infra_restored_in_correct_order": False,
-            "workflow_stage": "diagnosis",
-            "wasteful_ticks": 0,
+            "workflow_stage": "triage",
             "cumulative_reward": 0.0,
-            "final_score": 0.10,
+            "wasteful_ticks": 0,
             "score_breakdown": {
-                "infrastructure_score": 0.0,
-                "security_score": 0.0,
+                "recovery_score": 0.0,
+                "containment_score": 0.0,
+                "verification_score": 0.0,
+                "impact_score": 0.0,
                 "efficiency_score": 0.10,
-                "postmortem_score": 0.0,
                 "final_score": 0.10,
             },
+            "final_score": 0.10,
             "last_action_result": "",
             "done": False,
         }
 
-    def _clear_teaching_feedback(self) -> None:
-        self._episode["failure_type"] = None
-        self._episode["why_failed"] = None
-        self._episode["loop_warning"] = None
-        self._episode["blocked_until_security_complete"] = False
-        self._episode["best_recovery_action_family"] = None
-
-    def _set_failure(
-        self,
-        *,
-        failure_type: str,
-        why_failed: str,
-        blocked_until_security_complete: bool = False,
-        best_recovery_action_family: str | None = None,
-    ) -> None:
-        self._episode["failure_type"] = failure_type
-        self._episode["why_failed"] = why_failed
-        self._episode["blocked_until_security_complete"] = (
-            blocked_until_security_complete
-        )
-        self._episode["best_recovery_action_family"] = best_recovery_action_family
-
-    def _handle_investigation(
-        self, action: UnifiedIncidentAction
-    ) -> tuple[float, str, str | None, bool]:
-        scenario = self._episode["scenario"]
-        service = action.service
+    def _query_logs(self, service: str | None) -> str:
         assert service is not None
+        return self._episode["scenario"]["logs"][service]
 
-        if action.action_type == "query_logs":
-            output = scenario["logs"].get(service, f"No logs available for {service}.")
-        elif action.action_type == "query_metrics":
-            output = scenario["metrics"].get(service, {}).get(
-                action.metric or "",
-                f"No metric {action.metric!r} available for {service}.",
+    def _query_metrics(self, service: str | None, metric: str | None) -> str:
+        assert service is not None and metric is not None
+        return self._episode["scenario"]["metrics"][service][metric]
+
+    def _query_dependencies(self, service: str | None) -> str:
+        assert service is not None
+        return self._episode["scenario"]["dependencies"][service]
+
+    def _query_deploys(self, service: str | None) -> str:
+        assert service is not None
+        return self._episode["scenario"]["deploy_history"][service]
+
+    def _submit_hypothesis(self, action: UnifiedIncidentAction) -> tuple[float, bool, str]:
+        assert action.hypothesis is not None
+        normalized = json.dumps(action.hypothesis.model_dump(), sort_keys=True)
+        if normalized in self._episode["hypothesis_seen"]:
+            return 0.0, False, "Repeated hypothesis recorded with no additional reward."
+        self._episode["hypothesis_seen"].add(normalized)
+        truth = self._episode["scenario"]["truth"]
+        payload = action.hypothesis
+        cause_match = 1.0 if payload.root_cause == truth["root_cause"] else 0.0
+        service_match = len(set(payload.affected_services) & set(truth["affected_services"])) / len(set(truth["affected_services"]))
+        action_quality = 1.0 if payload.recommended_next_action == truth["best_next_action"] else -0.4
+        if cause_match == 1.0:
+            calibration = 1.0 if payload.confidence >= 0.7 else 0.5
+        else:
+            calibration = -1.0 if payload.confidence >= 0.7 else -0.2
+        reward = (0.04 * cause_match) + (0.03 * service_match) + (0.03 * action_quality) + (0.02 * calibration)
+        return round(reward, 4), True, "Hypothesis recorded. Reward reflects root-cause accuracy, service localization, confidence calibration, and next-action quality."
+
+    def _rollback_deploy(self, service: str | None) -> tuple[bool, float, str]:
+        assert service is not None
+        if service != "worker":
+            self._set_failure("wrong_remediation_target", "Rolling back a service without a causal link wastes time and risk.")
+            return False, self._unsafe_penalty(), f"Rollback on {service} did not address the incident."
+        if self._episode["cause_removed"]:
+            return False, 0.0, "Worker deploy is already rolled back."
+        self._episode["cause_removed"] = True
+        self._episode["containment_applied"] = True
+        self._episode["worker_version"] = "worker@2026.04.23-good"
+        self._episode["services"]["worker"] = ServiceHealth(
+            name="worker",
+            status="healthy",
+            cpu_pct=32.0,
+            memory_pct=37.0,
+            error_rate_pct=2.0,
+            latency_ms=40.0,
+        )
+        self._episode["user_impact"] = min(self._episode["user_impact"], 0.55)
+        self._episode["slo_burn_rate"] = min(self._episode["slo_burn_rate"], 0.58)
+        return True, 0.0, "Rolled back the worker deploy; downstream load should now stabilize after dependent services recover."
+
+    def _restart_service(self, service: str | None) -> tuple[bool, float, str]:
+        assert service is not None
+        if service == "database":
+            if not self._episode["cause_removed"]:
+                self._set_failure("premature_restart", "Restarting the database before removing the trigger only causes another crash loop.")
+                return False, self._unsafe_penalty(), "Database restart failed because the worker is still driving overload."
+            self._episode["services"]["database"] = ServiceHealth(
+                name="database",
+                status="healthy",
+                cpu_pct=34.0,
+                memory_pct=39.0,
+                error_rate_pct=0.0,
+                latency_ms=22.0,
+            )
+            self._episode["services"]["api-gateway"] = ServiceHealth(
+                name="api-gateway",
+                status="healthy",
+                cpu_pct=28.0,
+                memory_pct=31.0,
+                error_rate_pct=0.0,
+                latency_ms=38.0,
+            )
+            self._episode["user_impact"] = 0.14
+            self._episode["slo_burn_rate"] = 0.18
+            return True, 0.0, "Database restarted cleanly after the bad deploy was rolled back."
+        self._set_failure("low_value_restart", f"Restarting {service} is not the safe next remediation step for this incident.")
+        return False, self._unsafe_penalty() / 2, f"Restarting {service} had little or no positive effect."
+
+    def _isolate_service(self, service: str | None) -> tuple[bool, float, str]:
+        assert service is not None
+        if service != "worker":
+            self._set_failure("wrong_isolation_target", f"Isolating {service} does not contain the dominant failure path.")
+            return False, self._unsafe_penalty() / 2, f"Isolation of {service} did not materially reduce blast radius."
+        if self._episode["worker_isolated"]:
+            return False, 0.0, "Worker is already isolated."
+        self._episode["worker_isolated"] = True
+        self._episode["containment_applied"] = True
+        self._episode["services"]["worker"] = ServiceHealth(
+            name="worker",
+            status="isolated",
+            cpu_pct=8.0,
+            memory_pct=18.0,
+            error_rate_pct=0.0,
+            latency_ms=0.0,
+        )
+        self._episode["services"]["database"] = ServiceHealth(
+            name="database",
+            status="healthy",
+            cpu_pct=41.0,
+            memory_pct=46.0,
+            error_rate_pct=0.0,
+            latency_ms=26.0,
+        )
+        self._episode["services"]["api-gateway"] = ServiceHealth(
+            name="api-gateway",
+            status="degraded",
+            cpu_pct=34.0,
+            memory_pct=33.0,
+            error_rate_pct=7.0,
+            latency_ms=91.0,
+        )
+        self._episode["user_impact"] = 0.45
+        self._episode["slo_burn_rate"] = 0.47
+        return True, 0.0, "Worker isolated. Blast radius shrank, but end-to-end service remains degraded until the worker path is restored safely."
+
+    def _run_check(self, check_name: str | None) -> tuple[str, bool, str]:
+        assert check_name is not None
+        if check_name == "database_recovery":
+            passed = self._episode["services"]["database"].status == "healthy" and self._episode["cause_removed"]
+            detail = (
+                "Database is healthy and no longer crashing."
+                if passed
+                else "Database is still unstable or the triggering cause is still present."
             )
         else:
-            output = scenario["dependencies"].get(
-                service,
-                f"No dependency data available for {service}.",
+            passed = (
+                self._episode["services"]["database"].status == "healthy"
+                and self._episode["services"]["api-gateway"].status == "healthy"
+                and self._episode["cause_removed"]
+                and not self._episode["worker_isolated"]
             )
-
-        reward = 0.0
-        progressed = False
-        for rule in scenario["evidence_rules"]:
-            if rule["action_type"] != action.action_type:
-                continue
-            if rule["service"] != service:
-                continue
-            if action.action_type == "query_metrics" and rule.get("metric") != action.metric:
-                continue
-            if rule["id"] in self._episode["matched_evidence_ids"]:
-                break
-            self._episode["matched_evidence_ids"].add(rule["id"])
-            self._episode["discovered_evidence"].append(rule["detail"])
-            self._episode["relevant_investigations"] += 1
-            reward += 0.05
-            progressed = True
-            if rule.get("identifies_root_cause"):
-                self._episode["identified_root_cause"] = scenario["root_cause"]
-            if rule.get("unlocks_security"):
-                self._episode["security_subquest_status"] = "active"
-                self._episode["security_unlock_reason"] = rule.get(
-                    "unlock_reason",
-                    "Relevant incident evidence unlocked the security subquest.",
-                )
-            break
-
-        if (
-            self._episode["security_subquest_status"] == "locked"
-            and len(self._episode["matched_evidence_ids"]) >= scenario["unlock_threshold"]
-        ):
-            self._episode["security_subquest_status"] = "active"
-            self._episode["security_unlock_reason"] = (
-                "Enough incident evidence was collected to justify security investigation."
+            detail = (
+                "End-to-end login traffic is healthy."
+                if passed
+                else "End-to-end traffic still fails or remains degraded."
             )
+        self._episode["checks"][check_name] = CheckResult(name=check_name, passed=passed, detail=detail)
+        useful = self._mark_evidence_once(f"check:{check_name}:{passed}", detail)
+        return detail, useful, f"Ran {check_name} check."
 
-        return (
-            round(reward, 4),
-            f"{action.action_type} returned data for {service}.",
-            output,
-            progressed,
-        )
+    def _declare_resolved(self) -> tuple[bool, float, float, str]:
+        checks = self._episode["checks"]
+        safe_to_resolve = checks["database_recovery"].passed and checks["end_to_end"].passed
+        if not safe_to_resolve:
+            self._set_failure("premature_resolution", "The incident is not verified as resolved yet.")
+            return False, self._episode["scenario"]["reward_config"]["premature_resolution_penalty"], 0.0, "Resolution declaration rejected: required checks have not passed."
+        self._episode["incident_resolved"] = True
+        self._episode["done"] = True
+        return True, 0.0, self._episode["scenario"]["reward_config"]["successful_resolution_bonus"], "Incident declared resolved after passing objective checks."
 
-    def _handle_security(
-        self, action: UnifiedIncidentAction
-    ) -> tuple[float, str, str | None, bool]:
-        security = self._episode["security_context"]
-        scenario_security = self._episode["scenario"]["security"]
-        status = self._episode["security_subquest_status"]
+    def _mark_evidence_once(self, key: str, detail: str) -> bool:
+        if key in self._episode["evidence_seen"]:
+            return False
+        self._episode["evidence_seen"].add(key)
+        self._episode["discovered_evidence"].append(detail)
+        return True
 
-        if status == "locked":
-            self._set_failure(
-                failure_type="security_locked",
-                why_failed="Security actions are ineffective until the subquest is unlocked by relevant incident evidence.",
-                best_recovery_action_family="query_logs",
+    def _unsafe_penalty(self) -> float:
+        return float(self._episode["scenario"]["reward_config"]["unsafe_action_penalty"])
+
+    def _set_failure(self, failure_type: str, why_failed: str) -> None:
+        self._episode["failure_type"] = failure_type
+        self._episode["why_failed"] = why_failed
+
+    def _advance_world(self) -> None:
+        if not self._episode["cause_removed"] and not self._episode["worker_isolated"]:
+            self._episode["services"]["worker"] = ServiceHealth(
+                name="worker",
+                status="degraded",
+                cpu_pct=88.0,
+                memory_pct=71.0,
+                error_rate_pct=19.0,
+                latency_ms=420.0,
             )
-            return (
-                0.0,
-                "Security subquest is locked. Investigate the incident first.",
-                None,
-                False,
+            self._episode["services"]["database"] = ServiceHealth(
+                name="database",
+                status="crashed",
+                cpu_pct=99.0,
+                memory_pct=97.0,
+                error_rate_pct=100.0,
+                latency_ms=0.0,
             )
-
-        if action.action_type == "inspect_code":
-            if security.code_visible:
-                self._set_failure(
-                    failure_type="code_already_visible",
-                    why_failed="Inspecting code again does not reveal new information.",
-                    best_recovery_action_family="classify_vulnerability",
-                )
-                return 0.0, "Code is already visible.", None, False
-            security.code_visible = True
-            return (
-                0.0,
-                "Inspected the vulnerable code path.",
-                (
-                    f"{scenario_security['code_context']}\n"
-                    f"Patch options: {', '.join(option['id'] for option in scenario_security['patch_options'])}"
-                ),
-                True,
+            self._episode["services"]["api-gateway"] = ServiceHealth(
+                name="api-gateway",
+                status="degraded",
+                cpu_pct=61.0,
+                memory_pct=38.0,
+                error_rate_pct=24.0,
+                latency_ms=640.0,
             )
-
-        if action.action_type == "classify_vulnerability":
-            if not security.code_visible:
-                self._set_failure(
-                    failure_type="inspect_required",
-                    why_failed="Classification is unreliable until the vulnerable code is visible.",
-                    best_recovery_action_family="inspect_code",
-                )
-                return 0.0, "Inspect the code before classifying.", None, False
-            security.selected_vulnerability = action.vulnerability_type
-            if action.vulnerability_type == scenario_security["correct_vulnerability"]:
-                return 0.10, "Correct vulnerability classification.", None, True
-            self._set_failure(
-                failure_type="wrong_vulnerability",
-                why_failed="The selected vulnerability does not match the exploit described by the current evidence.",
-                best_recovery_action_family="classify_vulnerability",
-            )
-            return -0.08, "Wrong vulnerability classification.", None, False
-
-        if action.action_type == "apply_patch":
-            if not security.code_visible:
-                self._set_failure(
-                    failure_type="inspect_required",
-                    why_failed="Patching before inspecting code is unlikely to address the root cause safely.",
-                    best_recovery_action_family="inspect_code",
-                )
-                return 0.0, "Inspect the code before patching.", None, False
-            security.selected_patch = action.patch_id
-            security.exploit_blocked = None
-            security.functionality_preserved = None
-            if action.patch_id == scenario_security["correct_patch"]:
-                return 0.10, "Applied the correct patch.", None, True
-            self._set_failure(
-                failure_type="wrong_patch",
-                why_failed="The selected patch does not safely close the active exploit path.",
-                best_recovery_action_family="apply_patch",
-            )
-            return -0.10, f"Wrong patch applied: {action.patch_id}.", None, False
-
-        if action.action_type == "verify_security_fix":
-            if security.selected_patch is None:
-                self._set_failure(
-                    failure_type="verify_too_early",
-                    why_failed="Verification needs a selected patch first.",
-                    best_recovery_action_family="apply_patch",
-                )
-                return -0.05, "Verify called too early; no patch has been applied.", None, False
-            outcome = scenario_security["verify_outcomes"].get(
-                security.selected_patch,
-                {
-                    "exploit_blocked": False,
-                    "functionality_preserved": False,
-                    "message": f"Verification failed: {security.selected_patch} is an invalid patch for this scenario.",
-                },
-            )
-            security.exploit_blocked = outcome["exploit_blocked"]
-            security.functionality_preserved = outcome["functionality_preserved"]
-            if outcome["exploit_blocked"] and outcome["functionality_preserved"]:
-                return 0.10, outcome["message"], outcome["message"], True
-            self._set_failure(
-                failure_type="verification_failed",
-                why_failed=outcome["message"],
-                best_recovery_action_family="apply_patch",
-            )
-            return 0.0, outcome["message"], outcome["message"], False
-
-        if action.action_type == "submit_security_fix":
-            if not (
-                security.selected_vulnerability == scenario_security["correct_vulnerability"]
-                and security.selected_patch == scenario_security["correct_patch"]
-                and security.exploit_blocked is True
-                and security.functionality_preserved is True
-            ):
-                self._set_failure(
-                    failure_type="submit_too_early",
-                    why_failed="Security submission only works after correct classification, correct patching, and successful verification.",
-                    best_recovery_action_family="verify_security_fix",
-                )
-                return -0.05, "Submit security fix called before a successful verify.", None, False
-            self._episode["security_fix_submitted"] = True
-            self._episode["security_subquest_status"] = "completed"
-            return 0.05, "Security subquest completed.", None, True
-
-        return 0.0, "Unsupported security action.", None, False
-
-    def _handle_infrastructure(
-        self, action: UnifiedIncidentAction
-    ) -> tuple[float, str, bool]:
-        scenario = self._episode["scenario"]
-        service = action.service
-        assert service is not None
-
-        if self._episode["infra_progress"] >= len(scenario["recovery_sequence"]):
-            self._set_failure(
-                failure_type="infra_already_complete",
-                why_failed="No further infrastructure recovery actions are required right now.",
-                best_recovery_action_family="submit_postmortem",
-            )
-            return -0.08, "No infrastructure recovery steps remain.", False
-
-        expected = scenario["recovery_sequence"][self._episode["infra_progress"]]
-        matches_expected = (
-            action.action_type == expected["action_type"] and service == expected["service"]
-        )
-        if matches_expected and expected.get("requires_security_completion") and self._episode["security_subquest_status"] != "completed":
-            trap_message = self._trap_message(scenario, action)
-            if trap_message is not None:
-                self._set_failure(
-                    failure_type="infra_before_security",
-                    why_failed=trap_message,
-                    blocked_until_security_complete=True,
-                    best_recovery_action_family="submit_security_fix",
-                )
-                return -0.10, trap_message, False
-            self._set_failure(
-                failure_type="infra_before_security",
-                why_failed="This infrastructure step is blocked until the security subquest is completed.",
-                blocked_until_security_complete=True,
-                best_recovery_action_family="submit_security_fix",
-            )
-            return -0.08, "Infrastructure step attempted before security completion.", False
-
-        if not matches_expected:
-            trap_message = self._trap_message(scenario, action)
-            if trap_message is not None:
-                self._set_failure(
-                    failure_type="trap_action",
-                    why_failed=trap_message,
-                    best_recovery_action_family=expected["action_type"],
-                )
-                return -0.10, trap_message, False
-            self._set_failure(
-                failure_type="wrong_infra_action",
-                why_failed="This restart or rollback does not address the current bottleneck.",
-                best_recovery_action_family=expected["action_type"],
-            )
-            return -0.08, "Wrong restart or rollback for the current recovery step.", False
-
-        for service_name, payload in expected["updates"].items():
-            self._episode["services"][service_name] = ServiceHealth(
-                name=service_name,
-                **payload,
-            )
-        self._refresh_alerts()
-        self._episode["infra_progress"] += 1
-        self._episode["correct_infra_steps"] += 1
-
-        reward = 0.10
-        if self._episode["infra_progress"] == len(scenario["recovery_sequence"]):
-            self._episode["infra_restored_in_correct_order"] = True
-            if self._all_required_services_healthy():
-                self._episode["incident_resolved"] = True
-                reward += 0.30
-        return reward, expected["message"], True
-
-    def _trap_message(
-        self,
-        scenario: dict[str, Any],
-        action: UnifiedIncidentAction,
-    ) -> str | None:
-        for trap in scenario["trap_actions"]:
-            if trap["action_type"] != action.action_type or trap["service"] != action.service:
-                continue
-            if trap.get("requires_security_incomplete") and self._episode["security_subquest_status"] == "completed":
-                continue
-            return trap["message"]
-        return None
-
-    def _handle_postmortem(
-        self, action: UnifiedIncidentAction
-    ) -> tuple[float, str, bool]:
-        if not self._episode["incident_resolved"]:
-            self._set_failure(
-                failure_type="postmortem_too_early",
-                why_failed="Postmortem submission is only valid after services are healthy and recovery is complete.",
-                best_recovery_action_family="restart_service",
-            )
-            return -0.10, "Submit postmortem only after full recovery.", False
-        if self._episode["postmortem_submitted"]:
-            self._set_failure(
-                failure_type="postmortem_already_submitted",
-                why_failed="The postmortem is already complete for this episode.",
-            )
-            return 0.0, "Postmortem already submitted.", False
-        assert action.postmortem is not None
-        postmortem_score = self._grader.postmortem_score(
-            action.postmortem,
-            self._episode["scenario"],
-        )
-        self._episode["postmortem_submitted"] = True
-        self._episode["postmortem_score"] = postmortem_score
-        return postmortem_score, "Postmortem submitted.", True
-
-    def _all_required_services_healthy(self) -> bool:
-        return all(
-            self._episode["services"][name].status == "healthy"
-            for name in SERVICE_ORDER
-        )
+            self._episode["user_impact"] = max(self._episode["user_impact"], 0.82)
+            self._episode["slo_burn_rate"] = max(self._episode["slo_burn_rate"], 0.91)
+        if self._episode["worker_isolated"] and not self._episode["cause_removed"]:
+            self._episode["containment_applied"] = True
+        self._episode["workflow_stage"] = self._workflow_stage()
 
     def _refresh_alerts(self) -> None:
-        self._episode["alerts"] = [
-            alert
-            for alert in self._episode["alerts"]
-            if self._episode["services"][alert.service].status != "healthy"
-        ]
+        alerts: list[Alert] = []
+        for service_name in SERVICE_ORDER:
+            service = self._episode["services"][service_name]
+            if service.status == "crashed":
+                alerts.append(Alert(service=service_name, severity="critical", message=f"{service_name} is unavailable."))
+            elif service.status == "degraded":
+                alerts.append(Alert(service=service_name, severity="warning", message=f"{service_name} is degraded."))
+        if self._episode["user_impact"] >= 0.3 and not any(alert.service == "api-gateway" for alert in alerts):
+            alerts.append(Alert(service="api-gateway", severity="warning", message="User-visible impact remains elevated."))
+        self._episode["alerts"] = alerts
 
-    def _update_loop_feedback(
-        self,
-        action: UnifiedIncidentAction,
-        progressed: bool,
-    ) -> None:
+    def _update_loop_feedback(self, action: UnifiedIncidentAction, progressed: bool) -> None:
         action_key = repr(action.model_dump(exclude_none=True))
         if progressed:
             self._episode["last_action_key"] = action_key
-            self._episode["repeated_no_progress_count"] = 0
+            self._episode["repeat_count"] = 0
             return
-
         if self._episode["last_action_key"] == action_key:
-            self._episode["repeated_no_progress_count"] += 1
+            self._episode["repeat_count"] += 1
         else:
-            self._episode["repeated_no_progress_count"] = 1
+            self._episode["repeat_count"] = 1
         self._episode["last_action_key"] = action_key
+        if self._episode["repeat_count"] >= 2:
+            self._episode["loop_warning"] = "The same no-progress action has repeated; choose a different evidence source or remediation step."
 
-        if self._episode["repeated_no_progress_count"] >= 2:
-            repeat_count = self._episode["repeated_no_progress_count"]
-            self._episode["loop_warning"] = (
-                f"The same no-progress action has repeated {repeat_count} times."
-                " Stop repeating it; choose a different allowed action or move to the next workflow stage."
-            )
-            if self._episode["failure_type"] is None:
-                self._set_failure(
-                    failure_type="repeated_no_progress_action",
-                    why_failed="The system is not progressing because the same ineffective action keeps repeating.",
-                )
-            if repeat_count >= 3:
-                self._episode["cumulative_reward"] = round(
-                    self._episode["cumulative_reward"] - 0.02,
-                    4,
-                )
-
-    def _update_workflow_stage(self) -> None:
-        if self._episode["postmortem_submitted"]:
-            self._episode["workflow_stage"] = "done"
-            return
+    def _workflow_stage(self) -> str:
         if self._episode["incident_resolved"]:
-            self._episode["workflow_stage"] = "postmortem"
-            return
-        if self._episode["security_subquest_status"] == "completed":
-            self._episode["workflow_stage"] = "remediation"
-            return
-        security = self._episode["security_context"]
-        if security.exploit_blocked is True and security.functionality_preserved is True:
-            self._episode["workflow_stage"] = "verification"
-            return
-        if self._episode["security_subquest_status"] == "active":
-            self._episode["workflow_stage"] = "security_subquest"
-            return
-        if self._episode["identified_root_cause"]:
-            self._episode["workflow_stage"] = "root_cause_analysis"
-            return
-        self._episode["workflow_stage"] = "diagnosis"
+            return "resolved"
+        checks = self._episode["checks"]
+        if checks["database_recovery"].passed or checks["end_to_end"].passed:
+            return "validation"
+        if self._episode["containment_applied"] or self._episode["cause_removed"] or self._episode["worker_isolated"]:
+            return "mitigation"
+        return "triage"
 
     def _allowed_actions(self) -> list[str]:
-        return list(STAGE_ALLOWED_ACTIONS.get(self._episode["workflow_stage"], []))
+        return list(ALL_ACTIONS)
 
     def _required_fields_by_action(self) -> dict[str, list[str]]:
-        return {
-            action: REQUIRED_FIELDS_BY_ACTION[action]
-            for action in self._allowed_actions()
-        }
-
-    def _valid_action_example(self) -> dict[str, Any]:
-        stage = self._episode["workflow_stage"]
-        security = self._episode["security_context"]
-        scenario = self._episode["scenario"]
-        if stage in {"diagnosis", "root_cause_analysis"}:
-            if scenario["id"] == "database_sqli_outage":
-                return {"action_type": "query_logs", "service": "database"}
-            if scenario["id"] == "cache_abuse_broken_access_control":
-                return {
-                    "action_type": "query_metrics",
-                    "service": "cache",
-                    "metric": "cpu",
-                }
-            return {"action_type": "query_logs", "service": "worker"}
-        if stage == "security_subquest":
-            if not security.code_visible:
-                return {"action_type": "inspect_code"}
-            if security.selected_vulnerability is None:
-                return {
-                    "action_type": "classify_vulnerability",
-                    "vulnerability_type": scenario["security"]["correct_vulnerability"],
-                }
-            if security.selected_patch is None:
-                return {
-                    "action_type": "apply_patch",
-                    "patch_id": scenario["security"]["correct_patch"],
-                }
-            if security.exploit_blocked is not True:
-                return {"action_type": "verify_security_fix"}
-            return {"action_type": "submit_security_fix"}
-        if stage in {"remediation", "verification"}:
-            if (
-                stage == "verification"
-                and not self._episode["security_fix_submitted"]
-                and security.exploit_blocked is True
-                and security.functionality_preserved is True
-            ):
-                return {"action_type": "submit_security_fix"}
-            next_index = min(
-                self._episode["infra_progress"],
-                len(scenario["recovery_sequence"]) - 1,
-            )
-            expected = scenario["recovery_sequence"][next_index]
-            return {
-                "action_type": expected["action_type"],
-                "service": expected["service"],
-            }
-        return {
-            "action_type": "submit_postmortem",
-            "postmortem": {
-                "root_cause": scenario["root_cause"],
-                "attack_vector": scenario["attack_vector"],
-                "timeline": ["Investigated", "Patched", "Recovered"],
-                "remediation_steps": ["Patch", "Recover"],
-                "prevention_steps": ["Detect", "Harden"],
-            },
-        }
+        return {action: REQUIRED_FIELDS_BY_ACTION[action] for action in self._allowed_actions()}
 
     def _progress_flags(self) -> dict[str, bool]:
+        checks = self._episode["checks"]
         return {
-            "root_cause_identified": self._episode["identified_root_cause"] is not None,
-            "security_subquest_unlocked": self._episode["security_subquest_status"] != "locked",
-            "code_visible": self._episode["security_context"].code_visible,
-            "security_fix_submitted": self._episode["security_fix_submitted"],
+            "containment_applied": self._episode["containment_applied"],
+            "cause_removed": self._episode["cause_removed"],
+            "database_recovery": checks["database_recovery"].passed,
+            "end_to_end": checks["end_to_end"].passed,
             "incident_resolved": self._episode["incident_resolved"],
-            "postmortem_submitted": self._episode["postmortem_submitted"],
         }
 
-    def _stage_hint(self) -> str:
-        stage = self._episode["workflow_stage"]
-        if stage == "diagnosis":
-            return "Use investigation actions to identify the root cause quickly."
-        if stage == "root_cause_analysis":
-            return "Confirm the root cause and avoid repeated broad investigation."
-        if stage == "security_subquest":
-            return "Complete the security subquest with the next security action, then recover the system."
-        if stage == "remediation":
-            return "Recover the system health using the allowed remediation action."
-        if stage == "verification":
-            return "Verify the security fix and system recovery before submitting the security fix."
-        if stage == "postmortem":
-            return "Submit the postmortem now that the incident is resolved."
-        return "Follow the current stage goal and allowed actions."
-
-    def _stop_investigating_reason(self) -> str | None:
-        if self._episode["loop_warning"]:
-            return "Repeated no-progress actions detected. Stop investigating in the same way."
-        if self._episode["workflow_stage"] == "root_cause_analysis":
-            return "Confirm the root cause without broad additional queries."
-        if self._episode["workflow_stage"] in {"security_subquest", "remediation", "verification", "postmortem"}:
-            return "Avoid more query_* investigation actions unless strictly required by the current stage."
-        return None
-
-    def _patch_ids(self) -> list[str]:
-        scenario_security = self._episode["scenario"].get("security") or {}
-        patch_options = scenario_security.get("patch_options") or []
-        return [option["id"] for option in patch_options if "id" in option]
+    def _incident_summary(self) -> str:
+        return (
+            "Gateway login traffic is failing because the worker is overloading the database after a recent worker deploy. "
+            "Use evidence-gathering actions to diagnose, then choose a safe remediation and verify with explicit checks."
+        )
 
     def _prompt_text(self, tool_output: str | None) -> str:
-        allowed_actions = self._allowed_actions()
-        required_fields = self._required_fields_by_action()
-        valid_action_example = self._valid_action_example()
-        progress_flags = self._progress_flags()
         lines = [
             f"TICK {self._episode['tick']}/{self._episode['max_ticks']}",
             f"WORKFLOW_STAGE: {self._episode['workflow_stage']}",
             "",
+            "INCIDENT_SUMMARY:",
+            self._incident_summary(),
+            "",
             "ACTIVE_ALERTS:",
         ]
         if self._episode["alerts"]:
-            for alert in self._episode["alerts"]:
-                lines.append(f"- [{alert.severity.upper()}] {alert.service}: {alert.message}")
+            lines.extend(f"- [{alert.severity.upper()}] {alert.service}: {alert.message}" for alert in self._episode["alerts"])
         else:
             lines.append("- none")
-        lines.extend(["", "SERVICES:"])
+        lines.extend([
+            "",
+            "SERVICES:",
+        ])
         for service_name in SERVICE_ORDER:
             health = self._episode["services"][service_name]
             lines.append(
-                f"- {service_name}: {health.status} cpu={health.cpu_pct:.1f} mem={health.memory_pct:.1f} err={health.error_rate_pct:.1f}"
+                f"- {service_name}: {health.status} cpu={health.cpu_pct:.1f} mem={health.memory_pct:.1f} err={health.error_rate_pct:.1f} latency={health.latency_ms:.1f}"
             )
-        lines.extend(
-            [
-                "",
-                "LAST_ACTION_RESULT:",
-                self._episode["last_action_result"] or "none",
-                "",
-                "TOOL_OUTPUT:",
-                tool_output or "none",
-                "",
-                "FAILURE_TYPE:",
-                self._episode["failure_type"] or "none",
-                "",
-                "WHY_FAILED:",
-                self._episode["why_failed"] or "none",
-                "",
-                "SECURITY_SUBQUEST_STATUS:",
-                f"- {self._episode['security_subquest_status']}",
-                "",
-                "SECURITY_CONTEXT:",
-            ]
-        )
-        security = self._episode["security_context"]
-        lines.extend(
-            [
-                f"- code_visible: {'true' if security.code_visible else 'false'}",
-                f"- selected_vulnerability: {security.selected_vulnerability or 'null'}",
-                f"- selected_patch: {security.selected_patch or 'null'}",
-                f"- exploit_blocked: {self._bool_or_null(security.exploit_blocked)}",
-                f"- functionality_preserved: {self._bool_or_null(security.functionality_preserved)}",
-                "",
-                "ALLOWED_ACTIONS:",
-            ]
-        )
-        lines.extend([f"- {action}" for action in allowed_actions])
-        lines.extend(
-            [
-                "",
-                "REQUIRED_FIELDS_BY_ACTION:",
-            ]
-        )
-        lines.extend(
-            [
-                f"- {action}: {', '.join(fields) if fields else '(no extra fields)'}"
-                for action, fields in required_fields.items()
-            ]
-        )
-        stage_hint = self._stage_hint()
-        stop_investigation = self._stop_investigating_reason()
-        patch_ids = self._patch_ids()
-        lines.extend(
-            [
-                "",
-                "VALID_ACTION_EXAMPLE:",
-                json.dumps(valid_action_example, separators=(",", ":")),
-                "",
-                "COMMON_TRAP:",
-                self._episode["common_trap"] or "none",
-                "",
-                "STAGE_HINT:",
-                stage_hint,
-                "",
-                "STOP_INVESTIGATING:",
-                stop_investigation or "none",
-            ]
-        )
-        if patch_ids and "apply_patch" in allowed_actions:
-            lines.extend([
-                "",
-                "PATCH_IDS:",
-                ", ".join(patch_ids),
-            ])
-        lines.extend(
-            [
-                "",
-                "LOOP_WARNING:",
-                self._episode["loop_warning"] or "none",
-                "",
-                "SECURITY_UNLOCK_REASON:",
-                self._episode["security_unlock_reason"] or "none",
-                "",
-                "PROGRESS_FLAGS:",
-            ]
-        )
-        lines.extend(
-            [
-                f"- {name}: {'true' if value else 'false'}"
-                for name, value in progress_flags.items()
-            ]
-        )
-        lines.extend(
-            [
-                "",
-                "What is the next action? JSON only.",
-            ]
-        )
+        lines.extend([
+            "",
+            f"USER_IMPACT: {self._episode['user_impact']:.2f}",
+            f"SLO_BURN_RATE: {self._episode['slo_burn_rate']:.2f}",
+            f"LAST_ACTION_RESULT: {self._episode['last_action_result'] or 'none'}",
+            f"TOOL_OUTPUT: {tool_output or 'none'}",
+            f"FAILURE_TYPE: {self._episode['failure_type'] or 'none'}",
+            f"WHY_FAILED: {self._episode['why_failed'] or 'none'}",
+            "",
+            "CHECKS:",
+        ])
+        for check in self._episode["checks"].values():
+            lines.append(f"- {check.name}: {'passed' if check.passed else 'pending'} - {check.detail}")
+        lines.extend([
+            "",
+            "ALLOWED_ACTIONS:",
+        ])
+        lines.extend(f"- {action}" for action in self._allowed_actions())
         return "\n".join(lines)
 
-    def _bool_or_null(self, value: bool | None) -> str:
-        if value is None:
-            return "null"
-        return "true" if value else "false"
+    def _incident_health_potential(self) -> float:
+        weights = self._episode["scenario"]["critical_service_weights"]
+        services = self._episode["services"]
+        operational = sum(weights.get(name, 0.0) * STATUS_VALUES[services[name].status] for name in weights)
+        impact_relief = 1.0 - self._episode["user_impact"]
+        burn_relief = 1.0 - self._episode["slo_burn_rate"]
+        containment = 1.0 if self._episode["containment_applied"] else 0.0
+        return round((0.55 * operational) + (0.2 * impact_relief) + (0.15 * burn_relief) + (0.10 * containment), 4)
 
     def _state_dict(self) -> dict[str, Any]:
         return {
@@ -863,85 +568,61 @@ class UnifiedIncidentEnvironment(
             "max_ticks": self._episode["max_ticks"],
             "workflow_stage": self._episode["workflow_stage"],
             "active_alerts": [alert.model_dump() for alert in self._episode["alerts"]],
-            "service_health": {
-                name: service.model_dump()
-                for name, service in self._episode["services"].items()
-            },
+            "service_health": {name: service.model_dump() for name, service in self._episode["services"].items()},
             "discovered_evidence": list(self._episode["discovered_evidence"]),
-            "identified_root_cause": self._episode["identified_root_cause"],
-            "failure_type": self._episode["failure_type"],
-            "why_failed": self._episode["why_failed"],
+            "recent_deploys": list(self._episode["recent_deploys"]),
+            "checks": [check.model_dump() for check in self._episode["checks"].values()],
+            "user_impact": self._episode["user_impact"],
+            "slo_burn_rate": self._episode["slo_burn_rate"],
+            "incident_resolved": self._episode["incident_resolved"],
+            "containment_applied": self._episode["containment_applied"],
             "allowed_actions": self._allowed_actions(),
             "required_fields_by_action": self._required_fields_by_action(),
-            "valid_action_example": self._valid_action_example(),
-            "common_trap": self._episode["common_trap"],
-            "loop_warning": self._episode["loop_warning"],
-            "blocked_until_security_complete": self._episode["blocked_until_security_complete"],
-            "security_unlock_reason": self._episode["security_unlock_reason"],
-            "best_recovery_action_family": self._episode["best_recovery_action_family"],
+            "valid_action_example": None,
             "progress_flags": self._progress_flags(),
-            "security_subquest_status": self._episode["security_subquest_status"],
-            "security_context": self._episode["security_context"].model_dump(),
-            "security_fix_submitted": self._episode["security_fix_submitted"],
-            "incident_resolved": self._episode["incident_resolved"],
-            "postmortem_submitted": self._episode["postmortem_submitted"],
+            "final_score": self._episode["final_score"],
+            "score_breakdown": dict(self._episode["score_breakdown"]),
             "cumulative_reward": self._episode["cumulative_reward"],
-            "cumulative_score": self._episode["final_score"],
-            "score_breakdown": {
-                "infrastructure_score": self._episode["score_breakdown"]["infrastructure_score"],
-                "security_score": self._episode["score_breakdown"]["security_score"],
-                "efficiency_score": self._episode["score_breakdown"]["efficiency_score"],
-                "postmortem_score": self._episode["postmortem_score"],
-            },
-            "relevant_investigations": self._episode["relevant_investigations"],
-            "correct_infra_steps": self._episode["correct_infra_steps"],
-            "infra_restored_in_correct_order": self._episode["infra_restored_in_correct_order"],
-            "selected_vulnerability": self._episode["security_context"].selected_vulnerability,
-            "selected_patch": self._episode["security_context"].selected_patch,
-            "exploit_blocked": self._episode["security_context"].exploit_blocked,
-            "functionality_preserved": self._episode["security_context"].functionality_preserved,
             "wasteful_ticks": self._episode["wasteful_ticks"],
             "last_action_result": self._episode["last_action_result"],
+            "failure_type": self._episode["failure_type"],
+            "why_failed": self._episode["why_failed"],
         }
 
-    def _build_observation(
-        self,
-        last_action_result: str,
-        tool_output: str | None,
-        reward: float,
-        done: bool,
-    ) -> UnifiedIncidentObservation:
+    def _build_observation(self, last_action_result: str, tool_output: str | None, reward: float, done: bool) -> UnifiedIncidentObservation:
         return UnifiedIncidentObservation(
             prompt_text=self._prompt_text(tool_output),
+            incident_summary=self._incident_summary(),
             tick_count=self._episode["tick"],
             max_ticks=self._episode["max_ticks"],
             difficulty=self._episode["difficulty"],
             workflow_stage=self._episode["workflow_stage"],
             active_alerts=list(self._episode["alerts"]),
             service_health=dict(self._episode["services"]),
+            discovered_evidence=list(self._episode["discovered_evidence"]),
+            recent_deploys=list(self._episode["recent_deploys"]),
+            checks=list(self._episode["checks"].values()),
+            user_impact=self._episode["user_impact"],
+            slo_burn_rate=self._episode["slo_burn_rate"],
+            incident_resolved=self._episode["incident_resolved"],
+            containment_applied=self._episode["containment_applied"],
             last_action_result=last_action_result,
             tool_output=tool_output,
             failure_type=self._episode["failure_type"],
             why_failed=self._episode["why_failed"],
             allowed_actions=self._allowed_actions(),
             required_fields_by_action=self._required_fields_by_action(),
-            valid_action_example=self._valid_action_example(),
-            common_trap=self._episode["common_trap"],
+            valid_action_example=None,
+            common_trap=self._episode["scenario"].get("description"),
             loop_warning=self._episode["loop_warning"],
-            blocked_until_security_complete=self._episode["blocked_until_security_complete"],
-            security_unlock_reason=self._episode["security_unlock_reason"],
-            best_recovery_action_family=self._episode["best_recovery_action_family"],
+            blocked_until_security_complete=False,
+            security_unlock_reason=None,
+            best_recovery_action_family=None,
             progress_flags=self._progress_flags(),
-            security_subquest_status=self._episode["security_subquest_status"],
-            security_context=self._episode["security_context"].model_copy(deep=True),
+            security_subquest_status=None,
+            security_context={},
             final_score=self._episode["final_score"],
-            score_breakdown={
-                "infrastructure_score": self._episode["score_breakdown"]["infrastructure_score"],
-                "security_score": self._episode["score_breakdown"]["security_score"],
-                "efficiency_score": self._episode["score_breakdown"]["efficiency_score"],
-                "postmortem_score": self._episode["postmortem_score"],
-            },
-            incident_resolved=self._episode["incident_resolved"],
+            score_breakdown=dict(self._episode["score_breakdown"]),
             reward=round(reward, 4),
             done=done,
         )
