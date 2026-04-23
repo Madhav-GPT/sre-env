@@ -6,7 +6,7 @@ from fastapi.testclient import TestClient
 
 from unified_incident_env.models import HypothesisPayload, UnifiedIncidentAction
 from unified_incident_env.server import app as app_module
-from unified_incident_env.server.challenge import DEFAULT_SCENARIO_ID, list_baselines
+from unified_incident_env.server.challenge import DEFAULT_SCENARIO_ID, SCENARIOS, list_baselines, scenario_for_difficulty
 from unified_incident_env.server.environment import UnifiedIncidentEnvironment
 
 
@@ -27,7 +27,7 @@ def test_baseline_resolves_honestly() -> None:
     checks = {check.name: check.passed for check in obs.checks}
     assert checks["database_recovery"] is True
     assert checks["end_to_end"] is True
-    assert obs.final_score > 0.7
+    assert obs.final_score > 0.55
 
 
 def test_query_deploys_reveals_evidence_but_not_positive_reward() -> None:
@@ -114,12 +114,15 @@ def test_routes_expose_new_catalog_and_status(monkeypatch) -> None:
     assert tasks.status_code == 200
     payload = tasks.json()
     assert payload["default_scenario_id"] == DEFAULT_SCENARIO_ID
-    assert len(payload["scenarios"]) == 1
+    scenarios_by_difficulty = {scenario["difficulty"] for scenario in payload["scenarios"]}
+    assert {"easy", "medium", "hard"}.issubset(scenarios_by_difficulty)
+    assert {"easy", "medium", "hard"}.issubset(set(payload["available_difficulties"]))
 
     baseline = client.get("/baseline")
     assert baseline.status_code == 200
     baseline_payload = baseline.json()
-    assert baseline_payload["baselines"][0]["scenario_id"] == DEFAULT_SCENARIO_ID
+    baseline_ids = {item["scenario_id"] for item in baseline_payload["baselines"]}
+    assert {"worker_deploy_cascade", "db_config_rollout", "gateway_auth_rollout"}.issubset(baseline_ids)
 
     health = client.get("/health")
     assert health.status_code == 200
@@ -130,3 +133,143 @@ def test_routes_expose_new_catalog_and_status(monkeypatch) -> None:
     status_payload = status.json()
     assert status_payload["progress"]["scenario_id"] == DEFAULT_SCENARIO_ID
     assert status_payload["grader"]["score"] > 0.0
+
+
+def _run_baseline_for_scenario(scenario_id: str):
+    env = UnifiedIncidentEnvironment()
+    env.reset(scenario_id=scenario_id)
+    last = None
+    for step in list_baselines(scenario_id).baselines[0].actions:
+        last = env.step(step.action)
+    return last
+
+
+def test_medium_baseline_resolves_honestly() -> None:
+    obs = _run_baseline_for_scenario("db_config_rollout")
+    assert obs is not None
+    assert obs.done is True
+    assert obs.incident_resolved is True
+    checks = {check.name: check.passed for check in obs.checks}
+    assert checks["database_recovery"] is True
+    assert checks["end_to_end"] is True
+    assert obs.final_score > 0.55
+
+
+def test_hard_baseline_resolves_honestly() -> None:
+    obs = _run_baseline_for_scenario("gateway_auth_rollout")
+    assert obs is not None
+    assert obs.done is True
+    assert obs.incident_resolved is True
+    checks = {check.name: check.passed for check in obs.checks}
+    assert checks["end_to_end"] is True
+    assert obs.final_score > 0.55
+
+
+def test_medium_wrong_rollback_target_is_penalized() -> None:
+    env = UnifiedIncidentEnvironment()
+    env.reset(scenario_id="db_config_rollout")
+    obs = env.step(UnifiedIncidentAction(action_type="rollback_deploy", service="worker"))
+    assert obs.reward < 0.0
+    assert obs.failure_type == "wrong_remediation_target"
+    assert obs.incident_resolved is False
+
+
+def test_hard_wrong_rollback_target_is_penalized() -> None:
+    env = UnifiedIncidentEnvironment()
+    env.reset(scenario_id="gateway_auth_rollout")
+    obs = env.step(UnifiedIncidentAction(action_type="rollback_deploy", service="worker"))
+    assert obs.reward < 0.0
+    assert obs.failure_type == "wrong_remediation_target"
+
+
+def test_all_scenarios_expose_noise_alerts() -> None:
+    env = UnifiedIncidentEnvironment()
+    for scenario_id in ("worker_deploy_cascade", "db_config_rollout", "gateway_auth_rollout"):
+        obs = env.reset(scenario_id=scenario_id)
+        assert len(obs.noise_alerts) > 0, f"{scenario_id} should expose noise_alerts"
+        assert all(alert.message for alert in obs.noise_alerts)
+
+
+def test_blast_radius_increments_on_mitigations() -> None:
+    env = UnifiedIncidentEnvironment()
+    env.reset(scenario_id="worker_deploy_cascade")
+    obs0 = env.step(UnifiedIncidentAction(action_type="query_logs", service="worker"))
+    assert obs0.blast_radius == 0
+    env.step(UnifiedIncidentAction(action_type="rollback_deploy", service="worker"))
+    obs2 = env.step(UnifiedIncidentAction(action_type="restart_service", service="database"))
+    assert obs2.blast_radius == 2
+
+
+def test_baseline_ceiling_is_hardened_below_080() -> None:
+    """Scripted-optimal baseline must not score above ~0.80. Headroom left
+    for a trained agent that earns speed_bonus by finishing faster than
+    optimal_ticks."""
+    for scenario_id in ("worker_deploy_cascade", "db_config_rollout", "gateway_auth_rollout"):
+        obs = _run_baseline_for_scenario(scenario_id)
+        assert obs is not None
+        assert obs.final_score <= 0.80, f"{scenario_id} ceiling {obs.final_score} exceeds headroom budget"
+        assert obs.final_score >= 0.55, f"{scenario_id} ceiling {obs.final_score} is too low; env is unsolvable"
+
+
+def test_speed_bonus_rewards_finishing_under_optimal_ticks() -> None:
+    """A faster solve that keeps both verification checks should beat the
+    baseline ceiling by the speed_bonus margin. This is the training target
+    — trained agents that skip verification to chase speed should score
+    *lower*, not higher."""
+    env = UnifiedIncidentEnvironment()
+    env.reset(scenario_id="gateway_auth_rollout")
+    # 5-step path: 1 query + 1 rollback + 2 checks + 1 declare. Baseline does 8.
+    env.step(UnifiedIncidentAction(action_type="query_deploys", service="api-gateway"))
+    env.step(UnifiedIncidentAction(action_type="rollback_deploy", service="api-gateway"))
+    env.step(UnifiedIncidentAction(action_type="run_check", check_name="end_to_end"))
+    env.step(UnifiedIncidentAction(action_type="run_check", check_name="database_recovery"))
+    obs = env.step(UnifiedIncidentAction(action_type="declare_resolved"))
+    assert obs.incident_resolved is True
+    assert obs.score_breakdown.get("speed_bonus", 0) > 0.0
+    assert obs.final_score > 0.74, f"Faster solve with full verification should beat baseline, got {obs.final_score}"
+
+
+def test_hard_does_not_require_database_recovery_check() -> None:
+    env = UnifiedIncidentEnvironment()
+    env.reset(scenario_id="gateway_auth_rollout")
+    env.step(UnifiedIncidentAction(action_type="rollback_deploy", service="api-gateway"))
+    end_to_end = env.step(UnifiedIncidentAction(action_type="run_check", check_name="end_to_end"))
+    assert any(check.name == "end_to_end" and check.passed for check in end_to_end.checks)
+    resolved = env.step(UnifiedIncidentAction(action_type="declare_resolved"))
+    assert resolved.incident_resolved is True
+
+
+def test_procgen_catalog_registers_variants_for_each_template() -> None:
+    procgen_ids = {scenario_id for scenario_id, scenario in SCENARIOS.items() if scenario.get("is_procgen")}
+    assert any(scenario_id.startswith("worker_deploy_cascade__p") for scenario_id in procgen_ids)
+    assert any(scenario_id.startswith("db_config_rollout__p") for scenario_id in procgen_ids)
+    assert any(scenario_id.startswith("gateway_auth_rollout__p") for scenario_id in procgen_ids)
+
+
+def test_scenario_for_difficulty_seed_is_deterministic() -> None:
+    first = scenario_for_difficulty("medium", seed=7)
+    second = scenario_for_difficulty("medium", seed=7)
+    assert first["id"] == second["id"]
+    assert first["difficulty"] == "medium"
+
+
+def test_procgen_variant_baseline_routes_through_template_builder() -> None:
+    scenario_id = next(
+        current_id
+        for current_id, scenario in SCENARIOS.items()
+        if scenario.get("is_procgen") and scenario.get("template_id") == "db_config_rollout"
+    )
+    obs = _run_baseline_for_scenario(scenario_id)
+    assert obs is not None
+    assert obs.incident_resolved is True
+    assert obs.final_score >= 0.55
+
+
+def test_noise_service_queries_are_scored_as_noise() -> None:
+    env = UnifiedIncidentEnvironment()
+    obs = env.reset(scenario_id="gateway_auth_rollout__p01")
+    noise_service = obs.noise_alerts[0].service
+    noise_obs = env.step(UnifiedIncidentAction(action_type="query_logs", service=noise_service))
+    assert noise_obs.noise_queries == 1
+    assert noise_service in (noise_obs.tool_output or "")
+    assert noise_obs.score_breakdown["noise_handling_score"] < 0.05

@@ -24,7 +24,23 @@ def _service_score(status: str) -> float:
 
 
 class UnifiedIncidentGrader:
-    """Deterministic scorer focused on executed effects, not scripted clues."""
+    """Deterministic scorer focused on executed effects, not scripted clues.
+
+    Hardened schedule (post Track-A headroom patch):
+
+    - recovery       0.00 – 0.25
+    - containment    0.00 – 0.15
+    - verification   0.00 – 0.20
+    - impact         0.00 – 0.05
+    - efficiency     0.00 – 0.05
+    - speed_bonus    0.00 – 0.10    (positive only when faster than optimal)
+    - noise_handling 0.00 – 0.05    (penalizes querying noise services)
+
+    Scripted deterministic baseline (which matches optimal_ticks exactly and
+    avoids noise queries) caps at ~0.70. Headroom 0.70 → 0.85 is reachable only
+    by an agent that (a) is strictly faster than optimal and (b) touches zero
+    noise services. That's the training target.
+    """
 
     def compute_breakdown(
         self,
@@ -33,33 +49,64 @@ class UnifiedIncidentGrader:
     ) -> dict[str, float]:
         services = state.get("service_health", {})
         weights = scenario["critical_service_weights"]
-        recovery_score = round(
-            sum(
-                weights.get(service, 0.0) * _service_score((services.get(service) or {}).get("status", "crashed"))
-                for service in weights
-            ),
-            4,
+        recovery_raw = sum(
+            weights.get(service, 0.0) * _service_score((services.get(service) or {}).get("status", "crashed"))
+            for service in weights
         )
+        recovery_score = round(0.25 * recovery_raw, 4)
 
-        containment_score = 0.2 if state.get("containment_applied") else 0.0
-        if state.get("containment_applied") and (services.get("worker") or {}).get("status") == "healthy":
-            containment_score = 0.3
+        contained = bool(state.get("containment_applied"))
+        rollback_target = scenario.get("remediation_recipe", {}).get("rollback_target")
+        rollback_service_healthy = bool(
+            rollback_target and (services.get(rollback_target) or {}).get("status") == "healthy"
+        )
+        if contained and rollback_service_healthy:
+            containment_score = 0.15
+        elif contained:
+            containment_score = 0.10
+        else:
+            containment_score = 0.0
 
         checks = {item.get("name"): bool(item.get("passed")) for item in state.get("checks", [])}
         verification_score = 0.0
         if checks.get("database_recovery"):
-            verification_score += 0.15
+            verification_score += 0.08
         if checks.get("end_to_end"):
-            verification_score += 0.2
+            verification_score += 0.12
 
         user_impact = float(state.get("user_impact", 1.0))
-        impact_score = round(max(0.0, 0.15 * (1.0 - user_impact)), 4)
+        impact_score = round(max(0.0, 0.05 * (1.0 - user_impact)), 4)
 
         wasteful_ticks = int(state.get("wasteful_ticks", 0))
-        efficiency_score = round(max(0.0, 0.10 - (0.01 * wasteful_ticks)), 4)
+        efficiency_score = round(max(0.0, 0.05 - (0.005 * wasteful_ticks)), 4)
+
+        # speed_bonus: fully earned only if the agent finishes well under optimal_ticks.
+        optimal_ticks = int(scenario.get("optimal_ticks", 10))
+        current_tick = int(state.get("current_tick", 0))
+        incident_resolved = bool(state.get("incident_resolved"))
+        if incident_resolved and current_tick > 0 and current_tick < optimal_ticks:
+            speed_bonus = round(0.10 * (optimal_ticks - current_tick) / optimal_ticks, 4)
+        elif incident_resolved and current_tick == optimal_ticks:
+            speed_bonus = 0.0
+        else:
+            speed_bonus = 0.0
+
+        # noise_handling: deduct per query against a noise service, up to the cap of 0.05.
+        noise_services = set(scenario.get("difficulty_knobs", {}).get("noise_services", []))
+        noise_queries = int(state.get("noise_queries", 0))
+        if noise_services:
+            noise_handling_score = round(max(0.0, 0.05 - 0.015 * noise_queries), 4)
+        else:
+            noise_handling_score = 0.0
 
         final_score = _strict_public_score(
-            recovery_score + containment_score + verification_score + impact_score + efficiency_score
+            recovery_score
+            + containment_score
+            + verification_score
+            + impact_score
+            + efficiency_score
+            + speed_bonus
+            + noise_handling_score
         )
 
         return {
@@ -68,6 +115,8 @@ class UnifiedIncidentGrader:
             "verification_score": round(verification_score, 4),
             "impact_score": impact_score,
             "efficiency_score": efficiency_score,
+            "speed_bonus": speed_bonus,
+            "noise_handling_score": noise_handling_score,
             "final_score": final_score,
         }
 
@@ -88,7 +137,7 @@ class UnifiedIncidentGrader:
                     if state.get("containment_applied")
                     else "The root cause is still active or only partially contained."
                 ),
-                weight=0.30,
+                weight=0.20,
             ),
             GraderCheck(
                 name="database_recovery",
@@ -98,7 +147,7 @@ class UnifiedIncidentGrader:
                     if checks.get("database_recovery")
                     else "The database recovery check has not passed yet."
                 ),
-                weight=0.20,
+                weight=0.15,
             ),
             GraderCheck(
                 name="end_to_end_check",
@@ -112,10 +161,10 @@ class UnifiedIncidentGrader:
             ),
             GraderCheck(
                 name="critical_services_recovered",
-                passed=breakdown["recovery_score"] >= 0.8,
+                passed=breakdown["recovery_score"] >= 0.20,
                 detail=(
                     "Critical-path services are recovered."
-                    if breakdown["recovery_score"] >= 0.8
+                    if breakdown["recovery_score"] >= 0.20
                     else "Critical-path services are still degraded or crashed."
                 ),
                 weight=0.20,
@@ -129,6 +178,26 @@ class UnifiedIncidentGrader:
                     else "The incident has not been safely declared resolved."
                 ),
                 weight=0.10,
+            ),
+            GraderCheck(
+                name="speed_bonus_earned",
+                passed=breakdown.get("speed_bonus", 0.0) > 0.0,
+                detail=(
+                    "Resolved faster than optimal_ticks."
+                    if breakdown.get("speed_bonus", 0.0) > 0.0
+                    else "Did not beat optimal tick budget."
+                ),
+                weight=0.10,
+            ),
+            GraderCheck(
+                name="noise_handling",
+                passed=breakdown.get("noise_handling_score", 0.0) >= 0.035,
+                detail=(
+                    "Minimal or no queries against noise services."
+                    if breakdown.get("noise_handling_score", 0.0) >= 0.035
+                    else "Wasted queries on noise services."
+                ),
+                weight=0.05,
             ),
         ]
         return GraderReport(

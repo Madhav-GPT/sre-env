@@ -68,7 +68,7 @@ def create_compatible_app():
         env_factory,
         UnifiedIncidentAction,
         UnifiedIncidentObservation,
-        max_concurrent_envs=1,
+        max_concurrent_envs=int(os.environ.get("MAX_CONCURRENT_ENVS", "32")),
     )
 
     @app.get("/", include_in_schema=False)

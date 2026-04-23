@@ -21,9 +21,23 @@ ActionType = Literal[
     "submit_hypothesis",
     "declare_resolved",
 ]
-Difficulty = Literal["easy"]
+Difficulty = Literal["easy", "medium", "hard"]
 MetricName = Literal["cpu", "error_rate", "latency"]
-ServiceName = Literal["api-gateway", "cache", "database", "worker"]
+ServiceName = Literal[
+    "api-gateway",
+    "cache",
+    "database",
+    "worker",
+    # Noise-service pool surfaced by scenario.difficulty_knobs. These never
+    # appear in service_health (so agents can't query them through the
+    # action schema), but they do appear in alerts as distractors.
+    "stripe-webhook",
+    "email-queue",
+    "sessions-redis",
+    "image-cdn",
+    "feature-flags",
+    "analytics",
+]
 ServiceStatus = Literal["healthy", "degraded", "crashed", "isolated"]
 WorkflowStage = Literal["triage", "mitigation", "validation", "resolved"]
 CheckName = Literal["database_recovery", "end_to_end"]
@@ -180,10 +194,13 @@ class UnifiedIncidentObservation(Observation):
     difficulty: Difficulty
     workflow_stage: WorkflowStage
     active_alerts: list[Alert] = Field(default_factory=list)
+    noise_alerts: list[Alert] = Field(default_factory=list)
     service_health: dict[str, ServiceHealth] = Field(default_factory=dict)
     discovered_evidence: list[str] = Field(default_factory=list)
     recent_deploys: list[str] = Field(default_factory=list)
     checks: list[CheckResult] = Field(default_factory=list)
+    blast_radius: int = 0
+    noise_queries: int = 0
     user_impact: float = Field(ge=0.0, le=1.0)
     slo_burn_rate: float = Field(ge=0.0, le=1.0)
     incident_resolved: bool = False
@@ -222,10 +239,13 @@ class UnifiedIncidentState(State):
     max_ticks: int
     workflow_stage: WorkflowStage
     active_alerts: list[Alert] = Field(default_factory=list)
+    noise_alerts: list[Alert] = Field(default_factory=list)
     service_health: dict[str, ServiceHealth] = Field(default_factory=dict)
     discovered_evidence: list[str] = Field(default_factory=list)
     recent_deploys: list[str] = Field(default_factory=list)
     checks: list[CheckResult] = Field(default_factory=list)
+    blast_radius: int = 0
+    noise_queries: int = 0
     user_impact: float = Field(ge=0.0, le=1.0)
     slo_burn_rate: float = Field(ge=0.0, le=1.0)
     incident_resolved: bool = False

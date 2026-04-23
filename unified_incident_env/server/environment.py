@@ -58,7 +58,7 @@ STATUS_VALUES = {
 class UnifiedIncidentEnvironment(Environment[UnifiedIncidentAction, UnifiedIncidentObservation, UnifiedIncidentState]):
     """A bounded-action incident diagnosis and safe remediation environment."""
 
-    SUPPORTS_CONCURRENT_SESSIONS = False
+    SUPPORTS_CONCURRENT_SESSIONS = True
 
     def __init__(self) -> None:
         super().__init__()
@@ -78,13 +78,12 @@ class UnifiedIncidentEnvironment(Environment[UnifiedIncidentAction, UnifiedIncid
         )
 
     def reset(self, seed: int | None = None, episode_id: str | None = None, **kwargs: Any) -> UnifiedIncidentObservation:
-        del seed
         scenario_id = kwargs.get("scenario_id")
         difficulty = kwargs.get("difficulty")
         if scenario_id:
             scenario = get_scenario(scenario_id)
         elif difficulty:
-            scenario = scenario_for_difficulty(difficulty)
+            scenario = scenario_for_difficulty(difficulty, seed=seed)
         else:
             scenario = get_scenario(DEFAULT_SCENARIO_ID)
         self._episode = self._make_episode(scenario, episode_id=episode_id)
@@ -204,6 +203,11 @@ class UnifiedIncidentEnvironment(Environment[UnifiedIncidentAction, UnifiedIncid
             "database_recovery": CheckResult(name="database_recovery", passed=False, detail="Database recovery has not been verified yet."),
             "end_to_end": CheckResult(name="end_to_end", passed=False, detail="End-to-end health has not been verified yet."),
         }
+        recipe = scenario.get("remediation_recipe", {})
+        rollback_target = recipe.get("rollback_target", "worker")
+        recent_deploy_service = rollback_target if rollback_target in scenario["deploy_history"] else "worker"
+        knobs = scenario.get("difficulty_knobs", {})
+        noise_alerts = [Alert(**payload) for payload in knobs.get("noise_alerts", [])]
         return {
             "episode_id": episode_id or str(uuid.uuid4()),
             "scenario": scenario,
@@ -213,16 +217,16 @@ class UnifiedIncidentEnvironment(Environment[UnifiedIncidentAction, UnifiedIncid
             "difficulty": scenario["difficulty"],
             "services": services,
             "alerts": [Alert(**payload) for payload in scenario["initial_alerts"]],
+            "noise_alerts": noise_alerts,
             "discovered_evidence": [],
             "evidence_seen": set(),
-            "recent_deploys": [scenario["deploy_history"]["worker"]],
+            "recent_deploys": [scenario["deploy_history"].get(recent_deploy_service, "")],
             "checks": checks,
-            "user_impact": 0.82,
-            "slo_burn_rate": 0.91,
+            "user_impact": scenario.get("degraded_user_impact", 0.82),
+            "slo_burn_rate": scenario.get("degraded_slo_burn", 0.91),
             "containment_applied": False,
             "cause_removed": False,
-            "worker_isolated": False,
-            "worker_version": "worker@2026.04.23-bad",
+            "isolated_service": None,
             "hypothesis_seen": set(),
             "failure_type": None,
             "why_failed": None,
@@ -233,12 +237,16 @@ class UnifiedIncidentEnvironment(Environment[UnifiedIncidentAction, UnifiedIncid
             "workflow_stage": "triage",
             "cumulative_reward": 0.0,
             "wasteful_ticks": 0,
+            "blast_radius": 0,
+            "noise_queries": 0,
             "score_breakdown": {
                 "recovery_score": 0.0,
                 "containment_score": 0.0,
                 "verification_score": 0.0,
                 "impact_score": 0.0,
-                "efficiency_score": 0.10,
+                "efficiency_score": 0.05,
+                "speed_bonus": 0.0,
+                "noise_handling_score": 0.05 if knobs.get("noise_services") else 0.0,
                 "final_score": 0.10,
             },
             "final_score": 0.10,
@@ -246,20 +254,44 @@ class UnifiedIncidentEnvironment(Environment[UnifiedIncidentAction, UnifiedIncid
             "done": False,
         }
 
+    def _noise_knobs(self) -> dict[str, Any]:
+        return self._episode["scenario"].get("difficulty_knobs", {})
+
+    def _is_noise_service(self, service: str) -> bool:
+        return service in set(self._noise_knobs().get("noise_services", []))
+
+    def _record_noise_query(self, service: str) -> None:
+        if self._is_noise_service(service):
+            self._episode["noise_queries"] = self._episode.get("noise_queries", 0) + 1
+
     def _query_logs(self, service: str | None) -> str:
         assert service is not None
+        if self._is_noise_service(service):
+            self._record_noise_query(service)
+            noise_logs = self._noise_knobs().get("noise_logs", {})
+            detail = noise_logs.get(service, f"{service} logs show no incident-correlated regression.")
+            return f"{service}: {detail}"
         return self._episode["scenario"]["logs"][service]
 
     def _query_metrics(self, service: str | None, metric: str | None) -> str:
         assert service is not None and metric is not None
+        if self._is_noise_service(service):
+            self._record_noise_query(service)
+            return f"{service} {metric} metrics are within ordinary background variance and unrelated to the active incident."
         return self._episode["scenario"]["metrics"][service][metric]
 
     def _query_dependencies(self, service: str | None) -> str:
         assert service is not None
+        if self._is_noise_service(service):
+            self._record_noise_query(service)
+            return f"{service} is off the primary user-impact path and is not driving the incident."
         return self._episode["scenario"]["dependencies"][service]
 
     def _query_deploys(self, service: str | None) -> str:
         assert service is not None
+        if self._is_noise_service(service):
+            self._record_noise_query(service)
+            return f"No recent {service} deploy correlates with the active incident timeline."
         return self._episode["scenario"]["deploy_history"][service]
 
     def _submit_hypothesis(self, action: UnifiedIncidentAction) -> tuple[float, bool, str]:
@@ -280,108 +312,112 @@ class UnifiedIncidentEnvironment(Environment[UnifiedIncidentAction, UnifiedIncid
         reward = (0.04 * cause_match) + (0.03 * service_match) + (0.03 * action_quality) + (0.02 * calibration)
         return round(reward, 4), True, "Hypothesis recorded. Reward reflects root-cause accuracy, service localization, confidence calibration, and next-action quality."
 
+    def _recipe(self) -> dict[str, Any]:
+        return self._episode["scenario"].get("remediation_recipe", {})
+
+    def _failure_message(self, key: str, default: str) -> str:
+        return self._episode["scenario"].get("failure_messages", {}).get(key, default)
+
+    def _apply_service_updates(self, updates: dict[str, dict[str, Any]]) -> None:
+        for name, payload in updates.items():
+            self._episode["services"][name] = ServiceHealth(name=name, **payload)
+
+    def _bump_blast_radius(self) -> None:
+        self._episode["blast_radius"] = self._episode.get("blast_radius", 0) + 1
+
     def _rollback_deploy(self, service: str | None) -> tuple[bool, float, str]:
         assert service is not None
-        if service != "worker":
-            self._set_failure("wrong_remediation_target", "Rolling back a service without a causal link wastes time and risk.")
+        recipe = self._recipe()
+        rollback_target = recipe.get("rollback_target")
+        if rollback_target is None or service != rollback_target:
+            self._set_failure(
+                "wrong_remediation_target",
+                self._failure_message("wrong_rollback_target", "Rolling back a service without a causal link wastes time and risk."),
+            )
             return False, self._unsafe_penalty(), f"Rollback on {service} did not address the incident."
         if self._episode["cause_removed"]:
-            return False, 0.0, "Worker deploy is already rolled back."
+            return False, 0.0, f"{rollback_target} deploy is already rolled back."
         self._episode["cause_removed"] = True
         self._episode["containment_applied"] = True
-        self._episode["worker_version"] = "worker@2026.04.23-good"
-        self._episode["services"]["worker"] = ServiceHealth(
-            name="worker",
-            status="healthy",
-            cpu_pct=32.0,
-            memory_pct=37.0,
-            error_rate_pct=2.0,
-            latency_ms=40.0,
-        )
-        self._episode["user_impact"] = min(self._episode["user_impact"], 0.55)
-        self._episode["slo_burn_rate"] = min(self._episode["slo_burn_rate"], 0.58)
-        return True, 0.0, "Rolled back the worker deploy; downstream load should now stabilize after dependent services recover."
+        self._bump_blast_radius()
+        self._apply_service_updates(self._episode["scenario"].get("post_rollback_services", {}))
+        scenario = self._episode["scenario"]
+        self._episode["user_impact"] = min(self._episode["user_impact"], scenario.get("post_rollback_user_impact", self._episode["user_impact"]))
+        self._episode["slo_burn_rate"] = min(self._episode["slo_burn_rate"], scenario.get("post_rollback_slo_burn", self._episode["slo_burn_rate"]))
+        return True, 0.0, f"Rolled back the {rollback_target} deploy; the underlying cause is removed."
 
     def _restart_service(self, service: str | None) -> tuple[bool, float, str]:
         assert service is not None
-        if service == "database":
-            if not self._episode["cause_removed"]:
-                self._set_failure("premature_restart", "Restarting the database before removing the trigger only causes another crash loop.")
-                return False, self._unsafe_penalty(), "Database restart failed because the worker is still driving overload."
-            self._episode["services"]["database"] = ServiceHealth(
-                name="database",
-                status="healthy",
-                cpu_pct=34.0,
-                memory_pct=39.0,
-                error_rate_pct=0.0,
-                latency_ms=22.0,
+        recipe = self._recipe()
+        restart_target = recipe.get("restart_target")
+        if restart_target is None or service != restart_target:
+            self._set_failure(
+                "low_value_restart",
+                self._failure_message("low_value_restart", f"Restarting {service} is not the safe next remediation step for this incident."),
             )
-            self._episode["services"]["api-gateway"] = ServiceHealth(
-                name="api-gateway",
-                status="healthy",
-                cpu_pct=28.0,
-                memory_pct=31.0,
-                error_rate_pct=0.0,
-                latency_ms=38.0,
+            return False, self._unsafe_penalty() / 2, f"Restarting {service} had little or no positive effect."
+        if recipe.get("restart_requires_cause_removed", True) and not self._episode["cause_removed"]:
+            self._set_failure(
+                "premature_restart",
+                self._failure_message("premature_restart", f"Restarting {service} before removing the trigger only causes another failure."),
             )
-            self._episode["user_impact"] = 0.14
-            self._episode["slo_burn_rate"] = 0.18
-            return True, 0.0, "Database restarted cleanly after the bad deploy was rolled back."
-        self._set_failure("low_value_restart", f"Restarting {service} is not the safe next remediation step for this incident.")
-        return False, self._unsafe_penalty() / 2, f"Restarting {service} had little or no positive effect."
+            return False, self._unsafe_penalty(), f"Restart of {service} failed because the triggering cause is still present."
+        self._bump_blast_radius()
+        self._apply_service_updates(self._episode["scenario"].get("post_restart_services", {}))
+        scenario = self._episode["scenario"]
+        self._episode["user_impact"] = scenario.get("post_restart_user_impact", self._episode["user_impact"])
+        self._episode["slo_burn_rate"] = scenario.get("post_restart_slo_burn", self._episode["slo_burn_rate"])
+        return True, 0.0, f"{service} restarted cleanly after the triggering cause was removed."
 
     def _isolate_service(self, service: str | None) -> tuple[bool, float, str]:
         assert service is not None
-        if service != "worker":
-            self._set_failure("wrong_isolation_target", f"Isolating {service} does not contain the dominant failure path.")
+        recipe = self._recipe()
+        isolate_target = recipe.get("isolate_target")
+        if isolate_target is None or service != isolate_target:
+            self._set_failure(
+                "wrong_isolation_target",
+                self._failure_message("wrong_isolation_target", f"Isolating {service} does not contain the dominant failure path."),
+            )
             return False, self._unsafe_penalty() / 2, f"Isolation of {service} did not materially reduce blast radius."
-        if self._episode["worker_isolated"]:
-            return False, 0.0, "Worker is already isolated."
-        self._episode["worker_isolated"] = True
+        if self._episode["isolated_service"] == isolate_target:
+            return False, 0.0, f"{isolate_target} is already isolated."
+        self._episode["isolated_service"] = isolate_target
         self._episode["containment_applied"] = True
-        self._episode["services"]["worker"] = ServiceHealth(
-            name="worker",
-            status="isolated",
-            cpu_pct=8.0,
-            memory_pct=18.0,
-            error_rate_pct=0.0,
-            latency_ms=0.0,
-        )
-        self._episode["services"]["database"] = ServiceHealth(
-            name="database",
-            status="healthy",
-            cpu_pct=41.0,
-            memory_pct=46.0,
-            error_rate_pct=0.0,
-            latency_ms=26.0,
-        )
-        self._episode["services"]["api-gateway"] = ServiceHealth(
-            name="api-gateway",
-            status="degraded",
-            cpu_pct=34.0,
-            memory_pct=33.0,
-            error_rate_pct=7.0,
-            latency_ms=91.0,
-        )
-        self._episode["user_impact"] = 0.45
-        self._episode["slo_burn_rate"] = 0.47
-        return True, 0.0, "Worker isolated. Blast radius shrank, but end-to-end service remains degraded until the worker path is restored safely."
+        self._bump_blast_radius()
+        self._apply_service_updates(self._episode["scenario"].get("post_isolate_services", {}))
+        scenario = self._episode["scenario"]
+        self._episode["user_impact"] = scenario.get("post_isolate_user_impact", self._episode["user_impact"])
+        self._episode["slo_burn_rate"] = scenario.get("post_isolate_slo_burn", self._episode["slo_burn_rate"])
+        return True, 0.0, f"{isolate_target} isolated. Blast radius shrank, but full resolution still requires addressing the root cause."
 
     def _run_check(self, check_name: str | None) -> tuple[str, bool, str]:
         assert check_name is not None
+        recipe = self._recipe()
+        isolated = self._episode["isolated_service"]
+        cause_removed = self._episode["cause_removed"]
+        services = self._episode["services"]
         if check_name == "database_recovery":
-            passed = self._episode["services"]["database"].status == "healthy" and self._episode["cause_removed"]
+            db_healthy = services["database"].status == "healthy"
+            incident_driver = recipe.get("incident_driver")
+            if incident_driver in {"worker", "database"}:
+                passed = db_healthy and cause_removed
+            else:
+                passed = db_healthy
             detail = (
-                "Database is healthy and no longer crashing."
+                "Database is healthy and no longer failing."
                 if passed
                 else "Database is still unstable or the triggering cause is still present."
             )
         else:
+            gateway_healthy = services["api-gateway"].status == "healthy"
+            db_healthy = services["database"].status == "healthy"
+            worker_healthy = services["worker"].status == "healthy"
             passed = (
-                self._episode["services"]["database"].status == "healthy"
-                and self._episode["services"]["api-gateway"].status == "healthy"
-                and self._episode["cause_removed"]
-                and not self._episode["worker_isolated"]
+                gateway_healthy
+                and db_healthy
+                and worker_healthy
+                and cause_removed
+                and isolated is None
             )
             detail = (
                 "End-to-end login traffic is healthy."
@@ -394,7 +430,8 @@ class UnifiedIncidentEnvironment(Environment[UnifiedIncidentAction, UnifiedIncid
 
     def _declare_resolved(self) -> tuple[bool, float, float, str]:
         checks = self._episode["checks"]
-        safe_to_resolve = checks["database_recovery"].passed and checks["end_to_end"].passed
+        resolution_check = self._recipe().get("resolution_check", "end_to_end")
+        safe_to_resolve = bool(checks.get(resolution_check) and checks[resolution_check].passed)
         if not safe_to_resolve:
             self._set_failure("premature_resolution", "The incident is not verified as resolved yet.")
             return False, self._episode["scenario"]["reward_config"]["premature_resolution_penalty"], 0.0, "Resolution declaration rejected: required checks have not passed."
@@ -417,34 +454,14 @@ class UnifiedIncidentEnvironment(Environment[UnifiedIncidentAction, UnifiedIncid
         self._episode["why_failed"] = why_failed
 
     def _advance_world(self) -> None:
-        if not self._episode["cause_removed"] and not self._episode["worker_isolated"]:
-            self._episode["services"]["worker"] = ServiceHealth(
-                name="worker",
-                status="degraded",
-                cpu_pct=88.0,
-                memory_pct=71.0,
-                error_rate_pct=19.0,
-                latency_ms=420.0,
-            )
-            self._episode["services"]["database"] = ServiceHealth(
-                name="database",
-                status="crashed",
-                cpu_pct=99.0,
-                memory_pct=97.0,
-                error_rate_pct=100.0,
-                latency_ms=0.0,
-            )
-            self._episode["services"]["api-gateway"] = ServiceHealth(
-                name="api-gateway",
-                status="degraded",
-                cpu_pct=61.0,
-                memory_pct=38.0,
-                error_rate_pct=24.0,
-                latency_ms=640.0,
-            )
-            self._episode["user_impact"] = max(self._episode["user_impact"], 0.82)
-            self._episode["slo_burn_rate"] = max(self._episode["slo_burn_rate"], 0.91)
-        if self._episode["worker_isolated"] and not self._episode["cause_removed"]:
+        cause_removed = self._episode["cause_removed"]
+        isolated = self._episode["isolated_service"]
+        if not cause_removed and isolated is None:
+            self._apply_service_updates(self._episode["scenario"].get("degraded_services", {}))
+            scenario = self._episode["scenario"]
+            self._episode["user_impact"] = max(self._episode["user_impact"], scenario.get("degraded_user_impact", self._episode["user_impact"]))
+            self._episode["slo_burn_rate"] = max(self._episode["slo_burn_rate"], scenario.get("degraded_slo_burn", self._episode["slo_burn_rate"]))
+        if isolated is not None and not cause_removed:
             self._episode["containment_applied"] = True
         self._episode["workflow_stage"] = self._workflow_stage()
 
@@ -480,7 +497,7 @@ class UnifiedIncidentEnvironment(Environment[UnifiedIncidentAction, UnifiedIncid
         checks = self._episode["checks"]
         if checks["database_recovery"].passed or checks["end_to_end"].passed:
             return "validation"
-        if self._episode["containment_applied"] or self._episode["cause_removed"] or self._episode["worker_isolated"]:
+        if self._episode["containment_applied"] or self._episode["cause_removed"] or self._episode["isolated_service"] is not None:
             return "mitigation"
         return "triage"
 
@@ -498,12 +515,16 @@ class UnifiedIncidentEnvironment(Environment[UnifiedIncidentAction, UnifiedIncid
             "database_recovery": checks["database_recovery"].passed,
             "end_to_end": checks["end_to_end"].passed,
             "incident_resolved": self._episode["incident_resolved"],
+            "isolation_applied": self._episode["isolated_service"] is not None,
         }
 
     def _incident_summary(self) -> str:
+        description = self._episode["scenario"].get("description")
+        if description:
+            return description
         return (
-            "Gateway login traffic is failing because the worker is overloading the database after a recent worker deploy. "
-            "Use evidence-gathering actions to diagnose, then choose a safe remediation and verify with explicit checks."
+            "An incident is degrading user traffic. Use evidence-gathering actions to diagnose, "
+            "then choose a safe remediation and verify with explicit checks."
         )
 
     def _prompt_text(self, tool_output: str | None) -> str:
@@ -520,6 +541,10 @@ class UnifiedIncidentEnvironment(Environment[UnifiedIncidentAction, UnifiedIncid
             lines.extend(f"- [{alert.severity.upper()}] {alert.service}: {alert.message}" for alert in self._episode["alerts"])
         else:
             lines.append("- none")
+        noise = self._episode.get("noise_alerts", [])
+        if noise:
+            lines.extend(["", "NOISE_ALERTS (historically unrelated — resist querying these):"])
+            lines.extend(f"- [{alert.severity.upper()}] {alert.service}: {alert.message}" for alert in noise)
         lines.extend([
             "",
             "SERVICES:",
@@ -568,6 +593,7 @@ class UnifiedIncidentEnvironment(Environment[UnifiedIncidentAction, UnifiedIncid
             "max_ticks": self._episode["max_ticks"],
             "workflow_stage": self._episode["workflow_stage"],
             "active_alerts": [alert.model_dump() for alert in self._episode["alerts"]],
+            "noise_alerts": [alert.model_dump() for alert in self._episode.get("noise_alerts", [])],
             "service_health": {name: service.model_dump() for name, service in self._episode["services"].items()},
             "discovered_evidence": list(self._episode["discovered_evidence"]),
             "recent_deploys": list(self._episode["recent_deploys"]),
@@ -584,6 +610,8 @@ class UnifiedIncidentEnvironment(Environment[UnifiedIncidentAction, UnifiedIncid
             "score_breakdown": dict(self._episode["score_breakdown"]),
             "cumulative_reward": self._episode["cumulative_reward"],
             "wasteful_ticks": self._episode["wasteful_ticks"],
+            "blast_radius": self._episode.get("blast_radius", 0),
+            "noise_queries": self._episode.get("noise_queries", 0),
             "last_action_result": self._episode["last_action_result"],
             "failure_type": self._episode["failure_type"],
             "why_failed": self._episode["why_failed"],
@@ -598,6 +626,7 @@ class UnifiedIncidentEnvironment(Environment[UnifiedIncidentAction, UnifiedIncid
             difficulty=self._episode["difficulty"],
             workflow_stage=self._episode["workflow_stage"],
             active_alerts=list(self._episode["alerts"]),
+            noise_alerts=list(self._episode.get("noise_alerts", [])),
             service_health=dict(self._episode["services"]),
             discovered_evidence=list(self._episode["discovered_evidence"]),
             recent_deploys=list(self._episode["recent_deploys"]),
@@ -625,4 +654,6 @@ class UnifiedIncidentEnvironment(Environment[UnifiedIncidentAction, UnifiedIncid
             score_breakdown=dict(self._episode["score_breakdown"]),
             reward=round(reward, 4),
             done=done,
+            blast_radius=int(self._episode.get("blast_radius", 0)),
+            noise_queries=int(self._episode.get("noise_queries", 0)),
         )

@@ -12,10 +12,10 @@ environment:
   observation_type: UnifiedIncidentObservation
   state_type: UnifiedIncidentState
   max_steps: 12
-  difficulties: [easy]
+  difficulties: [easy, medium, hard]
   reward_type: dense
 
 huggingface:
-  space_id: gylder/my-env
+  space_id: dakshdoesdev/sre-gym
   sdk: docker
   hardware: cpu-basic

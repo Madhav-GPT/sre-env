@@ -7,3 +7,6 @@ learning_curve.png
 .codex/
 outputs/
 AGENTS.md
+.sisyphus/
+*.egg-info/
+uv.lock
