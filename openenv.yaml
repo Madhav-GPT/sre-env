@@ -1,4 +1,4 @@
-name: unified-incident-env
+name: sre-engineer-llm
 version: 2.0.0
 description: >
   Honest narrow OpenEnv benchmark for incident diagnosis and safe remediation.

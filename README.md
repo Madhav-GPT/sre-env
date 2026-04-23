@@ -1,6 +1,6 @@
-# Unified Incident Env (v2): The Honest SRE Simulator
+# SRE Engineer LLM (v2): The Honest SRE Simulator
 
-`unified_incident_env` is a high-fidelity Reinforcement Learning (RL) environment designed to train and evaluate AI agents on **Site Reliability Engineering (SRE)** and **Incident Response**.
+`sre-engineer-llm` is a high-fidelity Reinforcement Learning (RL) environment designed to train and evaluate AI agents on **Site Reliability Engineering (SRE)** and **Incident Response**.
 
 Unlike traditional "scripted" environments, this benchmark uses an honest, world-state-based simulation where agents must diagnose, mitigate, and resolve production outages without "cheating" through prompt oracles or hardcoded rails.
 
