@@ -75,7 +75,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--episodes-per-model", type=int, default=1000)
     parser.add_argument("--parallelism", type=int, default=20)
     parser.add_argument("--output", required=True, help="output JSONL path")
-    parser.add_argument("--driver", choices=("anthropic", "fireworks", "heuristic"), default="anthropic")
+    parser.add_argument(
+        "--driver",
+        choices=("anthropic", "fireworks", "groq", "heuristic"),
+        default="anthropic",
+    )
     parser.add_argument("--anthropic-api-key", default=os.getenv("ANTHROPIC_API_KEY"))
     parser.add_argument("--anthropic-base-url", default=os.getenv("ANTHROPIC_BASE_URL"))
     parser.add_argument("--fireworks-api-key", default=os.getenv("FIREWORKS_API_KEY"))
@@ -83,10 +87,16 @@ def parse_args() -> argparse.Namespace:
         "--fireworks-base-url",
         default=os.getenv("FIREWORKS_BASE_URL", "https://api.fireworks.ai/inference/v1"),
     )
+    parser.add_argument("--groq-api-key", default=os.getenv("GROQ_API_KEY"))
+    parser.add_argument(
+        "--groq-base-url",
+        default=os.getenv("GROQ_BASE_URL", "https://api.groq.com/openai/v1"),
+    )
     parser.add_argument("--max-tokens", type=int, default=320)
     parser.add_argument("--env-timeout-s", type=float, default=45.0)
     parser.add_argument("--anthropic-timeout-s", type=float, default=90.0)
     parser.add_argument("--fireworks-timeout-s", type=float, default=90.0)
+    parser.add_argument("--groq-timeout-s", type=float, default=60.0)
     parser.add_argument("--max-retries", type=int, default=3)
     return parser.parse_args()
 
@@ -259,7 +269,7 @@ def _extract_text_response(message: Any) -> str:
     return "".join(parts).strip()
 
 
-async def _request_fireworks_output(
+async def _request_openai_compat_output(
     *,
     http_client: httpx.AsyncClient,
     api_key: str,
@@ -268,11 +278,11 @@ async def _request_fireworks_output(
     prompt: str,
     max_tokens: int,
 ) -> str:
-    """Call Fireworks' OpenAI-compatible chat completions endpoint.
+    """Call an OpenAI-compatible /chat/completions endpoint (Fireworks, Groq).
 
     Handles 429 rate-limits by honoring the ``Retry-After`` header (or falling
     back to a jittered exponential delay), since the bulk-collection loop
-    otherwise saturates Fireworks' free-tier rate limit and cascades to the
+    otherwise saturates the provider's rate limit and cascades to the
     heuristic fallback — which poisons the training dataset.
     """
     attempt = 0
@@ -320,9 +330,9 @@ async def _request_model_output(
     *,
     driver: str,
     anthropic_client: Any,
-    fireworks_http: httpx.AsyncClient | None,
-    fireworks_api_key: str | None,
-    fireworks_base_url: str | None,
+    openai_compat_http: httpx.AsyncClient | None,
+    openai_compat_api_key: str | None,
+    openai_compat_base_url: str | None,
     model: str,
     prompt: str,
     fallback_action: UnifiedIncidentAction,
@@ -334,11 +344,11 @@ async def _request_model_output(
     last_error: str | None = None
     for attempt in range(1, max_retries + 1):
         try:
-            if driver == "fireworks":
-                text = await _request_fireworks_output(
-                    http_client=fireworks_http,
-                    api_key=fireworks_api_key,
-                    base_url=fireworks_base_url,
+            if driver in ("fireworks", "groq"):
+                text = await _request_openai_compat_output(
+                    http_client=openai_compat_http,
+                    api_key=openai_compat_api_key,
+                    base_url=openai_compat_base_url,
                     model=model,
                     prompt=prompt,
                     max_tokens=max_tokens,
@@ -366,7 +376,9 @@ async def _collect_episode(
     job: EpisodeJob,
     *,
     anthropic_client: Any,
-    fireworks_http: httpx.AsyncClient | None,
+    openai_compat_http: httpx.AsyncClient | None,
+    openai_compat_api_key: str | None,
+    openai_compat_base_url: str | None,
     args: argparse.Namespace,
 ) -> dict[str, Any]:
     trajectory: list[dict[str, Any]] = []
@@ -380,9 +392,9 @@ async def _collect_episode(
             response_text, driver_note = await _request_model_output(
                 driver=args.driver,
                 anthropic_client=anthropic_client,
-                fireworks_http=fireworks_http,
-                fireworks_api_key=args.fireworks_api_key,
-                fireworks_base_url=args.fireworks_base_url,
+                openai_compat_http=openai_compat_http,
+                openai_compat_api_key=openai_compat_api_key,
+                openai_compat_base_url=openai_compat_base_url,
                 model=job.model,
                 prompt=prompt,
                 fallback_action=fallback_action,
@@ -429,7 +441,9 @@ async def _worker(
     name: str,
     jobs: asyncio.Queue[EpisodeJob],
     anthropic_client: Any,
-    fireworks_http: httpx.AsyncClient | None,
+    openai_compat_http: httpx.AsyncClient | None,
+    openai_compat_api_key: str | None,
+    openai_compat_base_url: str | None,
     args: argparse.Namespace,
     write_lock: asyncio.Lock,
     output_path: Path,
@@ -441,7 +455,9 @@ async def _worker(
             record = await _collect_episode(
                 job,
                 anthropic_client=anthropic_client,
-                fireworks_http=fireworks_http,
+                openai_compat_http=openai_compat_http,
+                openai_compat_api_key=openai_compat_api_key,
+                openai_compat_base_url=openai_compat_base_url,
                 args=args,
             )
             async with write_lock:
@@ -475,6 +491,12 @@ async def _run_collection(args: argparse.Namespace) -> None:
             raise SystemExit(
                 "FIREWORKS_API_KEY is required when --driver=fireworks "
                 "(set env var or pass --fireworks-api-key)"
+            )
+    if args.driver == "groq":
+        if not args.groq_api_key:
+            raise SystemExit(
+                "GROQ_API_KEY is required when --driver=groq "
+                "(set env var or pass --groq-api-key)"
             )
 
     output_path = Path(args.output)
@@ -513,10 +535,20 @@ async def _run_collection(args: argparse.Namespace) -> None:
             http_client=anthropic_http_client,
         )
 
-    fireworks_http: httpx.AsyncClient | None = None
-    if args.driver == "fireworks":
-        fireworks_http = httpx.AsyncClient(
-            timeout=httpx.Timeout(args.fireworks_timeout_s),
+    openai_compat_http: httpx.AsyncClient | None = None
+    openai_compat_api_key: str | None = None
+    openai_compat_base_url: str | None = None
+    if args.driver in ("fireworks", "groq"):
+        if args.driver == "fireworks":
+            timeout_s = args.fireworks_timeout_s
+            openai_compat_api_key = args.fireworks_api_key
+            openai_compat_base_url = args.fireworks_base_url
+        else:
+            timeout_s = args.groq_timeout_s
+            openai_compat_api_key = args.groq_api_key
+            openai_compat_base_url = args.groq_base_url
+        openai_compat_http = httpx.AsyncClient(
+            timeout=httpx.Timeout(timeout_s),
             limits=httpx.Limits(
                 max_connections=max(args.parallelism * 2, 20),
                 max_keepalive_connections=max(args.parallelism, 10),
@@ -536,7 +568,9 @@ async def _run_collection(args: argparse.Namespace) -> None:
                 name=f"w{index + 1}",
                 jobs=jobs,
                 anthropic_client=anthropic_client,
-                fireworks_http=fireworks_http,
+                openai_compat_http=openai_compat_http,
+                openai_compat_api_key=openai_compat_api_key,
+                openai_compat_base_url=openai_compat_base_url,
                 args=args,
                 write_lock=write_lock,
                 output_path=output_path,
@@ -553,8 +587,8 @@ async def _run_collection(args: argparse.Namespace) -> None:
             worker.cancel()
         await asyncio.gather(*workers, return_exceptions=True)
         await anthropic_http_client.aclose()
-        if fireworks_http is not None:
-            await fireworks_http.aclose()
+        if openai_compat_http is not None:
+            await openai_compat_http.aclose()
 
     success_rate = counters["resolved"] / counters["total"] if counters["total"] else 0.0
     print(
