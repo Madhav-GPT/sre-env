@@ -14,7 +14,7 @@ alone.
   `train/collect_trajectories.py`, so SFT/GRPO pipelines treat these
   identically to API-driven trajectories.
 
-**Stats (6 episodes, all resolved, mean score 0.769):**
+**Stats (6 episodes, 39 raw steps, 35 trainable samples, all resolved, mean score 0.769).** 4 steps have empty `prompt` fields — they're the `rollback_deploy` step immediately after `submit_hypothesis` on 4 of the 6 episodes. Those two actions were chained through `/tmp/play.py` in a single shell call during recording, and the intermediate observation was lost in the render (pool server returned it correctly; the driver script dropped it). Loaders should filter samples where `len(prompt) < 50` — see `train/sanity_run.ipynb` cell 10 for the reference implementation.
 
 | scenario | score | steps |
 |---|---|---|
