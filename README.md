@@ -9,14 +9,16 @@ pinned: false
 license: apache-2.0
 ---
 
-# sre-gym — Fault-injecting SRE training env for OpenEnv
+# sre-gym — Fault-injecting SRE training env for vibe-coded SaaS
 
-Most SRE agent skills are runbooks and good intentions. **sre-gym** is the other half: a fault-injecting environment with deterministic grading where an agent diagnoses a real production-style incident, chooses a safe remediation, verifies recovery, and declares resolved. Every run is scored the same way twice.
+**45% of AI-generated code has at least one security flaw.** **88% of AI-generated logging code doesn't sanitize inputs.** **40% of AI-generated database queries are SQL-injectable.** *(Veracode, JFrog/Snyk, Accorian, 2025-2026 — measurements across 100+ LLMs and 5,600 deployed apps.)* And in July 2025, a Replit Agent deleted Jason Lemkin's SaaStr production database during an explicit code freeze. This is the fastest-shipping software segment with the weakest SRE muscle — and no existing benchmark simulates its specific failure modes.
+
+**sre-gym** is a fault-injecting environment where an agent diagnoses vibe-coded SaaS incidents (Stripe webhook misconfigs, Prisma schema drift, Supabase RLS holes, cache TTL regressions, auth-middleware rollouts, deploy cascades), chooses a safe remediation, verifies recovery, and declares resolved. Every run is scored the same way twice.
 
 - Spec-compliant OpenEnv environment (typed Pydantic action / observation / state, `reset` / `step` / `state`, `openenv validate` green).
-- 3 curriculum scenarios — easy, medium, hard — with decoy services and causal dependencies.
-- 11 bounded actions. Honest state transitions. No hidden oracles.
-- 21 tests passing.
+- **6 scenario templates grounded in real 2025-2026 production incidents.** Each expands to 5 seeded procgen variants = **30 scenarios live**.
+- 11 bounded actions. Honest state transitions. No hidden oracles. Evidence-grounded hypothesis scoring — lucky guesses don't score.
+- 36 tests passing.
 - Ships a Claude Code skill + verified-runbook loop — successful solves write markdown runbooks that the next run reads back.
 
 ## 30-second demo
@@ -29,11 +31,18 @@ Starts the env, solves each scenario cold, writes a runbook for each, re-solves 
 
 ## Curriculum
 
-| Difficulty | Scenario | Story | Decoy | Correct path |
-|---|---|---|---|---|
-| easy | `worker_deploy_cascade` | Bad worker deploy → DB crash-loop → login 502s | — | rollback worker → restart db → verify → resolve |
-| medium | `db_config_rollout` | DB config push shrank connection pool from 80→12 | recent worker deploy | rollback **db** → restart db → verify → resolve |
-| hard | `gateway_auth_rollout` | Gateway auth-middleware rollout rejects valid logins | recent worker deploy | rollback **gateway** → verify → resolve (no restart) |
+| Difficulty | Scenario | Story | Correct path |
+|---|---|---|---|
+| easy | `worker_deploy_cascade` | Bad worker deploy → DB crash-loop → login 502s | rollback worker → restart db → verify → resolve |
+| medium | `db_config_rollout` | DB config push shrank connection pool from 80→12 | rollback **db** → restart db → verify |
+| medium | `payment_webhook_misconfig` | Gateway deploy broke Stripe webhook signature verification — users charged, subs inactive | rollback **gateway** → verify |
+| medium | `schema_drift_missing_migration` | Gateway deploy expects `users.plan_tier` column; migration never shipped | rollback **gateway** → verify |
+| medium | `cache_stale_state` | Cache deploy bumped session TTL 30s→3600s; users see cross-user state | rollback **cache** → restart cache → verify |
+| hard | `gateway_auth_rollout` | Gateway auth-middleware rollout rejects valid logins | rollback **gateway** → verify (no restart) |
+
+Every template ships with 5 procgen variants (`__p01..__p05`) that jitter metrics, deploy timestamps, and noise-service decoys — so trained agents can't memorize a specific fingerprint. Noise services (`stripe-webhook`, `sentry`, `supabase-realtime`, `openai-proxy`, `clerk-auth`, `feature-flags`, `analytics`, …) surface plausibly-relevant alerts that are historically benign; resisting the urge to query them is a scored dimension.
+
+Rolling back the wrong service returns a negative reward and `failure_type="wrong_remediation_target"`. Restarting before the cause is removed re-inherits the bad state. `declare_resolved` is rejected until the scenario's resolution check passes against the actual world model.
 
 Rolling back the wrong service returns a negative reward and `failure_type="wrong_remediation_target"`. Restarting before the cause is removed re-inherits the bad state. `declare_resolved` is rejected until the scenario's resolution check passes against the actual world model.
 

@@ -550,6 +550,526 @@ _BASE_SCENARIOS: dict[str, dict[str, Any]] = {
             "blast_radius_budget": 1,
         },
     },
+    "payment_webhook_misconfig": {
+        "id": "payment_webhook_misconfig",
+        "difficulty": "medium",
+        "name": "Stripe Webhook Signature Regression",
+        "description": (
+            "A recent api-gateway deploy shipped a webhook handler with the wrong Stripe API "
+            "version and signature-verification logic. ~40% of webhooks now fail signature check. "
+            "Users are paying but subscriptions never activate. Support tickets are climbing. "
+            "The agent must localize the fault to the gateway deploy (not Stripe itself), roll back, "
+            "and verify end-to-end recovery."
+        ),
+        "root_cause": "A bad api-gateway deploy broke Stripe webhook signature verification.",
+        "optimal_ticks": 9,
+        "max_ticks": 12,
+        "critical_service_weights": {
+            "worker": 0.1,
+            "database": 0.3,
+            "api-gateway": 0.6,
+            "cache": 0.0,
+        },
+        "reward_config": {
+            "step_cost": 0.01,
+            "redundant_action_penalty": 0.02,
+            "unsafe_action_penalty": 0.08,
+            "premature_resolution_penalty": 0.2,
+            "successful_resolution_bonus": 0.25,
+            "hypothesis_bonus_scale": 0.12,
+            "forbidden_reward_sources": [
+                "evidence_discovery",
+                "query_success",
+                "unlock_events",
+                "stage_advancement",
+                "patch_id_selection",
+            ],
+        },
+        "initial_services": {
+            "api-gateway": {
+                "status": "degraded",
+                "cpu_pct": 34.0,
+                "memory_pct": 39.0,
+                "error_rate_pct": 38.0,
+                "latency_ms": 210.0,
+            },
+            "cache": {
+                "status": "healthy",
+                "cpu_pct": 19.0,
+                "memory_pct": 25.0,
+                "error_rate_pct": 0.0,
+                "latency_ms": 13.0,
+            },
+            "database": {
+                "status": "healthy",
+                "cpu_pct": 31.0,
+                "memory_pct": 37.0,
+                "error_rate_pct": 1.0,
+                "latency_ms": 28.0,
+            },
+            "worker": {
+                "status": "healthy",
+                "cpu_pct": 27.0,
+                "memory_pct": 34.0,
+                "error_rate_pct": 2.0,
+                "latency_ms": 42.0,
+            },
+        },
+        "initial_alerts": [
+            {
+                "service": "api-gateway",
+                "severity": "critical",
+                "message": "Stripe dashboard shows 47% of webhook deliveries failing signature verification since last deploy.",
+            },
+            {
+                "service": "api-gateway",
+                "severity": "warning",
+                "message": "Support: 12 users report 'paid but subscription inactive' in the last 30 minutes.",
+            },
+        ],
+        "logs": {
+            "api-gateway": (
+                "Gateway webhook handler logs: 'Stripe signature verification failed: no signatures found matching the expected signature'. "
+                "Trace points at gateway@2026.04.24-stripe-fix rollout from the webhook handler rewrite."
+            ),
+            "cache": "Cache is idle on the webhook path; payment flow does not touch cache.",
+            "database": (
+                "Database writes to the subscriptions table dropped to near-zero in the last 40 minutes. "
+                "No schema or query-plan changes recorded."
+            ),
+            "worker": "Worker queue is not involved in the webhook payment path; no anomaly.",
+        },
+        "metrics": {
+            "api-gateway": {
+                "error_rate": "Webhook-path error rate is 38% and matches the Stripe delivery-failure rate exactly.",
+                "latency": "Non-webhook gateway latency is unchanged; only /webhooks/stripe is regressing.",
+            },
+            "database": {
+                "error_rate": "Database error rate is steady near zero; the fault is upstream of the DB.",
+                "latency": "Database latency unchanged.",
+            },
+            "worker": {
+                "error_rate": "Worker error rate is baseline; worker is not on the payment write path.",
+            },
+        },
+        "dependencies": {
+            "api-gateway": "api-gateway -> stripe webhook verification -> database (subscriptions table write)",
+            "worker": "worker is not part of the payment webhook path",
+            "database": "database receives subscription writes only from the gateway webhook handler",
+        },
+        "deploy_history": {
+            "api-gateway": "Rolled out gateway@2026.04.24-stripe-fix 18 minutes ago (Stripe webhook handler rewrite; API version bump 2023-10-16 -> 2024-06-20).",
+            "cache": "No cache deploys in the last 24h.",
+            "database": "No database deploys in the last 24h.",
+            "worker": "No worker deploys in the last 24h.",
+        },
+        "checks": {
+            "database_recovery": "Confirms the subscriptions-table write path is restored.",
+            "end_to_end": "Confirms a fresh Stripe webhook round-trip succeeds end-to-end.",
+        },
+        "truth": {
+            "root_cause": "payment_webhook_regression",
+            "affected_services": ["api-gateway", "database"],
+            "best_next_action": "rollback_deploy",
+        },
+        "remediation_recipe": {
+            "rollback_target": "api-gateway",
+            "restart_target": None,
+            "isolate_target": "api-gateway",
+            "restart_requires_cause_removed": True,
+            "incident_driver": "api-gateway",
+            "resolution_check": "end_to_end",
+        },
+        "post_rollback_services": {
+            "api-gateway": {"status": "healthy", "cpu_pct": 28.0, "memory_pct": 33.0, "error_rate_pct": 1.0, "latency_ms": 36.0},
+        },
+        "post_rollback_user_impact": 0.12,
+        "post_rollback_slo_burn": 0.15,
+        "post_restart_services": {},
+        "post_restart_user_impact": 0.12,
+        "post_restart_slo_burn": 0.15,
+        "post_isolate_services": {
+            "api-gateway": {"status": "isolated", "cpu_pct": 5.0, "memory_pct": 12.0, "error_rate_pct": 0.0, "latency_ms": 0.0},
+        },
+        "post_isolate_user_impact": 0.62,
+        "post_isolate_slo_burn": 0.68,
+        "degraded_services": {
+            "api-gateway": {"status": "degraded", "cpu_pct": 34.0, "memory_pct": 39.0, "error_rate_pct": 38.0, "latency_ms": 210.0},
+        },
+        "degraded_user_impact": 0.45,
+        "degraded_slo_burn": 0.52,
+        "failure_messages": {
+            "wrong_rollback_target": "Rolling back worker or cache doesn't fix a webhook handler regression on the gateway.",
+            "low_value_restart": "Restarting doesn't undo the bad signature-verification code that shipped in the gateway deploy.",
+            "premature_restart": "Restarting before rolling back the gateway deploy just brings the broken handler back up.",
+            "wrong_isolation_target": "Isolating the wrong service drops healthy traffic without containing the webhook failure.",
+        },
+        "difficulty_knobs": {
+            "noise_services": ["stripe-webhook", "sentry", "analytics"],
+            "noise_alerts": [
+                {"service": "stripe-webhook", "severity": "warning", "message": "Stripe webhook retry queue growing — symptom of upstream handler failures (not a separate fault)."},
+                {"service": "sentry", "severity": "warning", "message": "Sentry ingest latency +18ms — unrelated diurnal pattern."},
+                {"service": "analytics", "severity": "warning", "message": "Analytics consumer lag +22s from baseline — unrelated batch job."},
+            ],
+            "noise_logs": {
+                "stripe-webhook": "Stripe dashboard shows delivery failures tracking gateway error rate 1:1 — stripe-webhook is a downstream symptom, not the cause.",
+                "sentry": "Sentry ingest delay is a known weekly pattern during their batch index rebuild.",
+                "analytics": "Analytics consumer lag tracks end-of-quarter reporting load and is independent of the payment path.",
+            },
+            "blast_radius_budget": 1,
+        },
+    },
+    "schema_drift_missing_migration": {
+        "id": "schema_drift_missing_migration",
+        "difficulty": "medium",
+        "name": "Prisma Schema Drift / Missing Migration",
+        "description": (
+            "A new api-gateway deploy ships Prisma client code expecting a `users.plan_tier` column "
+            "that was added to the schema file but whose migration was never applied to production. "
+            "Any /billing or /settings route that references plan_tier now 500s. The agent must "
+            "recognize that the database is healthy but the application-side schema expectation is wrong, "
+            "roll back the gateway deploy, and verify recovery."
+        ),
+        "root_cause": "A bad api-gateway deploy assumes a database column whose migration never shipped.",
+        "optimal_ticks": 9,
+        "max_ticks": 12,
+        "critical_service_weights": {
+            "worker": 0.2,
+            "database": 0.2,
+            "api-gateway": 0.6,
+            "cache": 0.0,
+        },
+        "reward_config": {
+            "step_cost": 0.01,
+            "redundant_action_penalty": 0.02,
+            "unsafe_action_penalty": 0.08,
+            "premature_resolution_penalty": 0.2,
+            "successful_resolution_bonus": 0.25,
+            "hypothesis_bonus_scale": 0.12,
+            "forbidden_reward_sources": [
+                "evidence_discovery",
+                "query_success",
+                "unlock_events",
+                "stage_advancement",
+                "patch_id_selection",
+            ],
+        },
+        "initial_services": {
+            "api-gateway": {
+                "status": "degraded",
+                "cpu_pct": 41.0,
+                "memory_pct": 44.0,
+                "error_rate_pct": 33.0,
+                "latency_ms": 260.0,
+            },
+            "cache": {
+                "status": "healthy",
+                "cpu_pct": 18.0,
+                "memory_pct": 24.0,
+                "error_rate_pct": 0.0,
+                "latency_ms": 14.0,
+            },
+            "database": {
+                "status": "healthy",
+                "cpu_pct": 29.0,
+                "memory_pct": 36.0,
+                "error_rate_pct": 2.0,
+                "latency_ms": 24.0,
+            },
+            "worker": {
+                "status": "degraded",
+                "cpu_pct": 38.0,
+                "memory_pct": 41.0,
+                "error_rate_pct": 11.0,
+                "latency_ms": 180.0,
+            },
+        },
+        "initial_alerts": [
+            {
+                "service": "api-gateway",
+                "severity": "critical",
+                "message": "Sentry: PrismaClientKnownRequestError 'column users.plan_tier does not exist' — 33% error rate on /billing.",
+            },
+            {
+                "service": "worker",
+                "severity": "warning",
+                "message": "Worker plan-tier sync job failing with the same column-missing error from the ORM layer.",
+            },
+        ],
+        "logs": {
+            "api-gateway": (
+                "Gateway logs: 'PrismaClientKnownRequestError: column `users.plan_tier` does not exist in the current database' "
+                "beginning right after gateway@2026.04.24-plan-tiers was rolled out."
+            ),
+            "cache": "Cache is unaffected; plan-tier lookups never reach the cache because the query fails at the ORM layer.",
+            "database": (
+                "Database is healthy. Postgres logs confirm the column genuinely doesn't exist; "
+                "migrations table shows last applied migration was 2026-04-18, before the plan_tier schema change."
+            ),
+            "worker": (
+                "Worker logs show the same column-missing errors from its plan-tier sync job; "
+                "no worker deploy today, the worker just happens to share the Prisma client."
+            ),
+        },
+        "metrics": {
+            "api-gateway": {
+                "error_rate": "Gateway 500 rate is 33% and concentrated exclusively on /billing and /settings routes.",
+                "latency": "Gateway latency on unaffected routes is normal; only plan-tier-touching endpoints are broken.",
+            },
+            "database": {
+                "error_rate": "Database query error rate is near zero — queries fail at the ORM, never reach the DB.",
+            },
+            "worker": {
+                "error_rate": "Worker sync-job error rate tracks the gateway exactly; same Prisma client version, same fault.",
+            },
+        },
+        "dependencies": {
+            "api-gateway": "api-gateway -> prisma client -> database (column query rejected at ORM level)",
+            "worker": "worker also depends on the same prisma client; both broke together because they share a code artifact",
+            "database": "database is a passive participant; it rejects the query because the column truly isn't there",
+        },
+        "deploy_history": {
+            "api-gateway": "Rolled out gateway@2026.04.24-plan-tiers 22 minutes ago (schema update + Prisma client regenerate; migration was generated but the apply step was skipped in CI).",
+            "cache": "No cache deploys in the last 24h.",
+            "database": "No database schema changes applied in the last 72h (migrations table last entry: 2026-04-18T14:02Z).",
+            "worker": "No worker deploys in the last 24h; worker inherits the new Prisma client via shared package.",
+        },
+        "checks": {
+            "database_recovery": "Confirms the database schema and ORM queries are consistent.",
+            "end_to_end": "Confirms /billing and /settings routes return 200 again.",
+        },
+        "truth": {
+            "root_cause": "schema_migration_mismatch",
+            "affected_services": ["api-gateway", "worker", "database"],
+            "best_next_action": "rollback_deploy",
+        },
+        "remediation_recipe": {
+            "rollback_target": "api-gateway",
+            "restart_target": None,
+            "isolate_target": "api-gateway",
+            "restart_requires_cause_removed": True,
+            "incident_driver": "api-gateway",
+            "resolution_check": "end_to_end",
+        },
+        "post_rollback_services": {
+            "api-gateway": {"status": "healthy", "cpu_pct": 26.0, "memory_pct": 32.0, "error_rate_pct": 1.0, "latency_ms": 34.0},
+            "worker": {"status": "healthy", "cpu_pct": 24.0, "memory_pct": 30.0, "error_rate_pct": 1.0, "latency_ms": 44.0},
+        },
+        "post_rollback_user_impact": 0.10,
+        "post_rollback_slo_burn": 0.14,
+        "post_restart_services": {},
+        "post_restart_user_impact": 0.10,
+        "post_restart_slo_burn": 0.14,
+        "post_isolate_services": {
+            "api-gateway": {"status": "isolated", "cpu_pct": 4.0, "memory_pct": 10.0, "error_rate_pct": 0.0, "latency_ms": 0.0},
+        },
+        "post_isolate_user_impact": 0.58,
+        "post_isolate_slo_burn": 0.66,
+        "degraded_services": {
+            "api-gateway": {"status": "degraded", "cpu_pct": 41.0, "memory_pct": 44.0, "error_rate_pct": 33.0, "latency_ms": 260.0},
+            "worker": {"status": "degraded", "cpu_pct": 38.0, "memory_pct": 41.0, "error_rate_pct": 11.0, "latency_ms": 180.0},
+        },
+        "degraded_user_impact": 0.48,
+        "degraded_slo_burn": 0.55,
+        "failure_messages": {
+            "wrong_rollback_target": "Rolling back the database or worker doesn't undo the gateway's schema-expecting deploy.",
+            "low_value_restart": "Restarting won't create the missing column; the gateway code must be rolled back to a schema-compatible version.",
+            "premature_restart": "Restarting before rolling back just brings the same broken Prisma client back up.",
+            "wrong_isolation_target": "Isolating healthy services drops traffic without fixing the ORM-layer mismatch.",
+        },
+        "difficulty_knobs": {
+            "noise_services": ["supabase-realtime", "sentry", "feature-flags"],
+            "noise_alerts": [
+                {"service": "supabase-realtime", "severity": "warning", "message": "Supabase-realtime subscription reconnect storm during routine credential rotation (unrelated)."},
+                {"service": "sentry", "severity": "warning", "message": "Sentry release-health warning: new release has >1% regression — expected given the deploy correlation."},
+                {"service": "feature-flags", "severity": "warning", "message": "Feature-flags config push for an experiment unrelated to the billing path."},
+            ],
+            "noise_logs": {
+                "supabase-realtime": "Supabase-realtime reconnect chatter is independent of the billing write path.",
+                "sentry": "Sentry release-health alert is a downstream echo of the gateway error rate, not a separate fault.",
+                "feature-flags": "Feature-flags rollout targets onboarding funnel only; no billing-path gating.",
+            },
+            "blast_radius_budget": 1,
+        },
+    },
+    "cache_stale_state": {
+        "id": "cache_stale_state",
+        "difficulty": "medium",
+        "name": "Cache TTL Regression / Stale State Leak",
+        "description": (
+            "A cache deploy bumped session-object TTL from 30s to 3600s. Users now see stale data, "
+            "and a few support tickets report seeing other users' display names on page refresh. "
+            "Cache metrics look healthy (hit ratio is up!) which is the trap. The agent must "
+            "localize the fault to the cache deploy, roll back, restart to purge the poisoned state, "
+            "and verify recovery."
+        ),
+        "root_cause": "A bad cache deploy increased session TTL and is serving stale, sometimes cross-user, state.",
+        "optimal_ticks": 10,
+        "max_ticks": 12,
+        "critical_service_weights": {
+            "worker": 0.1,
+            "database": 0.1,
+            "api-gateway": 0.3,
+            "cache": 0.5,
+        },
+        "reward_config": {
+            "step_cost": 0.01,
+            "redundant_action_penalty": 0.02,
+            "unsafe_action_penalty": 0.08,
+            "premature_resolution_penalty": 0.2,
+            "successful_resolution_bonus": 0.25,
+            "hypothesis_bonus_scale": 0.12,
+            "forbidden_reward_sources": [
+                "evidence_discovery",
+                "query_success",
+                "unlock_events",
+                "stage_advancement",
+                "patch_id_selection",
+            ],
+        },
+        "initial_services": {
+            "api-gateway": {
+                "status": "degraded",
+                "cpu_pct": 32.0,
+                "memory_pct": 38.0,
+                "error_rate_pct": 9.0,
+                "latency_ms": 82.0,
+            },
+            "cache": {
+                "status": "degraded",
+                "cpu_pct": 21.0,
+                "memory_pct": 28.0,
+                "error_rate_pct": 0.0,
+                "latency_ms": 16.0,
+            },
+            "database": {
+                "status": "healthy",
+                "cpu_pct": 26.0,
+                "memory_pct": 34.0,
+                "error_rate_pct": 0.0,
+                "latency_ms": 22.0,
+            },
+            "worker": {
+                "status": "healthy",
+                "cpu_pct": 24.0,
+                "memory_pct": 31.0,
+                "error_rate_pct": 1.0,
+                "latency_ms": 48.0,
+            },
+        },
+        "initial_alerts": [
+            {
+                "service": "api-gateway",
+                "severity": "critical",
+                "message": "Support ticket storm: 14 users report seeing stale or cross-user session data in the last hour.",
+            },
+            {
+                "service": "cache",
+                "severity": "warning",
+                "message": "Cache hit ratio is abnormally high (98% vs baseline 72%) — consistent with over-long TTL.",
+            },
+        ],
+        "logs": {
+            "api-gateway": (
+                "Gateway logs: authenticated user_id in session does not match database user_id on "
+                "~3% of requests — ratio matches the inverse of session turnover. No gateway deploy in 24h."
+            ),
+            "cache": (
+                "Cache logs show bumped default TTL from 30s to 3600s via cache@2026.04.24-ttl-perf rollout. "
+                "Engineer note in the deploy: 'Improves cache hit ratio; should cut DB read cost.' "
+                "Session keys were not excluded from the TTL bump."
+            ),
+            "database": (
+                "Database read volume on sessions table dropped 70% in the last 45 minutes — consistent with "
+                "cache over-serving, not with an app-level bug."
+            ),
+            "worker": "Worker is not on the session read/write path; no anomaly.",
+        },
+        "metrics": {
+            "api-gateway": {
+                "error_rate": "Gateway 4xx rate is +9% on authenticated routes — not errors per se, but wrong-data symptoms.",
+                "latency": "Gateway latency is actually improved (cache over-serving), which is the misleading signal.",
+            },
+            "cache": {
+                "latency": "Cache latency is baseline; cache is technically healthy by its own metrics.",
+            },
+            "database": {
+                "cpu": "Database CPU dropped as cache started over-serving — looks like a win until you see the user reports.",
+            },
+        },
+        "dependencies": {
+            "api-gateway": "api-gateway -> cache (session lookup) -> database (on cache miss)",
+            "cache": "cache sits in front of sessions table; TTL controls cross-user isolation window",
+            "database": "database is passive; cache is masking state divergence from the DB",
+        },
+        "deploy_history": {
+            "api-gateway": "No gateway deploys in the last 24h.",
+            "cache": "Rolled out cache@2026.04.24-ttl-perf 35 minutes ago (default TTL 30s -> 3600s for 'hit ratio'; no per-key overrides).",
+            "database": "No database deploys in the last 72h.",
+            "worker": "No worker deploys in the last 24h.",
+        },
+        "checks": {
+            "database_recovery": "Confirms the sessions table read volume and cache consistency window are back to baseline.",
+            "end_to_end": "Confirms a fresh login presents that user's own data on refresh, not a stale snapshot.",
+        },
+        "truth": {
+            "root_cause": "cache_ttl_regression",
+            "affected_services": ["cache", "api-gateway"],
+            "best_next_action": "rollback_deploy",
+        },
+        "remediation_recipe": {
+            "rollback_target": "cache",
+            "restart_target": "cache",
+            "isolate_target": "cache",
+            "restart_requires_cause_removed": True,
+            "incident_driver": "cache",
+            "resolution_check": "end_to_end",
+        },
+        "post_rollback_services": {
+            "cache": {"status": "healthy", "cpu_pct": 20.0, "memory_pct": 27.0, "error_rate_pct": 0.0, "latency_ms": 14.0},
+        },
+        "post_rollback_user_impact": 0.22,
+        "post_rollback_slo_burn": 0.24,
+        "post_restart_services": {
+            "cache": {"status": "healthy", "cpu_pct": 18.0, "memory_pct": 25.0, "error_rate_pct": 0.0, "latency_ms": 13.0},
+            "api-gateway": {"status": "healthy", "cpu_pct": 27.0, "memory_pct": 32.0, "error_rate_pct": 1.0, "latency_ms": 38.0},
+        },
+        "post_restart_user_impact": 0.08,
+        "post_restart_slo_burn": 0.12,
+        "post_isolate_services": {
+            "cache": {"status": "isolated", "cpu_pct": 3.0, "memory_pct": 9.0, "error_rate_pct": 0.0, "latency_ms": 0.0},
+            "api-gateway": {"status": "degraded", "cpu_pct": 41.0, "memory_pct": 46.0, "error_rate_pct": 4.0, "latency_ms": 120.0},
+            "database": {"status": "degraded", "cpu_pct": 58.0, "memory_pct": 52.0, "error_rate_pct": 2.0, "latency_ms": 44.0},
+        },
+        "post_isolate_user_impact": 0.40,
+        "post_isolate_slo_burn": 0.44,
+        "degraded_services": {
+            "cache": {"status": "degraded", "cpu_pct": 21.0, "memory_pct": 28.0, "error_rate_pct": 0.0, "latency_ms": 16.0},
+            "api-gateway": {"status": "degraded", "cpu_pct": 32.0, "memory_pct": 38.0, "error_rate_pct": 9.0, "latency_ms": 82.0},
+        },
+        "degraded_user_impact": 0.58,
+        "degraded_slo_burn": 0.60,
+        "failure_messages": {
+            "wrong_rollback_target": "Rolling back gateway/worker/db doesn't flush stale entries from a cache deployed with bad TTL.",
+            "low_value_restart": "Restarting a service that didn't introduce bad TTL doesn't purge the poisoned cache state.",
+            "premature_restart": "Restarting the cache before rolling back just reintroduces the bad TTL config.",
+            "wrong_isolation_target": "Isolating a healthy service drops user traffic without flushing the stale cache state.",
+        },
+        "difficulty_knobs": {
+            "noise_services": ["stripe-webhook", "openai-proxy", "clerk-auth"],
+            "noise_alerts": [
+                {"service": "stripe-webhook", "severity": "warning", "message": "Stripe webhook retry rate +4% — within normal diurnal variance."},
+                {"service": "openai-proxy", "severity": "warning", "message": "OpenAI proxy p95 latency +32ms — upstream provider weather, unrelated to sessions."},
+                {"service": "clerk-auth", "severity": "warning", "message": "Clerk-auth JWKS cache refresh ran 18 minutes late — unrelated to session cache."},
+            ],
+            "noise_logs": {
+                "stripe-webhook": "Webhook retry volume is within normal bounds; no session involvement.",
+                "openai-proxy": "OpenAI proxy latency reflects provider-side weather and is not on the session-data path.",
+                "clerk-auth": "Clerk JWKS refresh delay is within SLA and is independent of the internal session cache.",
+            },
+            "blast_radius_budget": 2,
+        },
+    },
 }
 
 
@@ -870,10 +1390,152 @@ def _gateway_auth_rollout_baseline() -> list[BaselineStep]:
     ]
 
 
+def _payment_webhook_misconfig_baseline() -> list[BaselineStep]:
+    return [
+        BaselineStep(
+            action=UnifiedIncidentAction(action_type="query_logs", service="api-gateway"),
+            rationale="Gateway owns the webhook handler; read logs for the signature-failure signature.",
+        ),
+        BaselineStep(
+            action=UnifiedIncidentAction(action_type="query_deploys", service="api-gateway"),
+            rationale="Recent gateway deploy is the most likely driver; confirm timing and version.",
+        ),
+        BaselineStep(
+            action=UnifiedIncidentAction(action_type="query_metrics", service="database", metric="error_rate"),
+            rationale="Confirm the database itself is not faulting — the webhook path writes to it but DB errors are steady.",
+        ),
+        BaselineStep(
+            action=UnifiedIncidentAction(
+                action_type="submit_hypothesis",
+                hypothesis={
+                    "root_cause": "payment_webhook_regression",
+                    "affected_services": ["api-gateway", "database"],
+                    "confidence": 0.85,
+                    "recommended_next_action": "rollback_deploy",
+                },
+            ),
+            rationale="Localize the fault to the gateway's webhook handler deploy before remediating.",
+        ),
+        BaselineStep(
+            action=UnifiedIncidentAction(action_type="rollback_deploy", service="api-gateway"),
+            rationale="Roll back the bad webhook handler deploy; no restart needed for this class of fault.",
+        ),
+        BaselineStep(
+            action=UnifiedIncidentAction(action_type="run_check", check_name="end_to_end"),
+            rationale="Verify a fresh Stripe webhook round-trip succeeds end-to-end.",
+        ),
+        BaselineStep(
+            action=UnifiedIncidentAction(action_type="run_check", check_name="database_recovery"),
+            rationale="Confirm subscriptions-table write path is fully restored.",
+        ),
+        BaselineStep(
+            action=UnifiedIncidentAction(action_type="declare_resolved"),
+            rationale="Declare resolved only after objective checks pass.",
+        ),
+    ]
+
+
+def _schema_drift_baseline() -> list[BaselineStep]:
+    return [
+        BaselineStep(
+            action=UnifiedIncidentAction(action_type="query_logs", service="api-gateway"),
+            rationale="Gateway is reporting the PrismaClientKnownRequestError; inspect log text for the column name.",
+        ),
+        BaselineStep(
+            action=UnifiedIncidentAction(action_type="query_deploys", service="api-gateway"),
+            rationale="The error started with the latest gateway deploy; confirm which deploy and its scope.",
+        ),
+        BaselineStep(
+            action=UnifiedIncidentAction(action_type="query_logs", service="database"),
+            rationale="Verify the database is healthy and the column genuinely isn't there — rules out DB-side corruption.",
+        ),
+        BaselineStep(
+            action=UnifiedIncidentAction(
+                action_type="submit_hypothesis",
+                hypothesis={
+                    "root_cause": "schema_migration_mismatch",
+                    "affected_services": ["api-gateway", "worker", "database"],
+                    "confidence": 0.88,
+                    "recommended_next_action": "rollback_deploy",
+                },
+            ),
+            rationale="Localize to the gateway deploy that shipped schema-expecting code without applying its migration.",
+        ),
+        BaselineStep(
+            action=UnifiedIncidentAction(action_type="rollback_deploy", service="api-gateway"),
+            rationale="Revert the gateway to a schema-compatible version; migration re-application is a separate workstream.",
+        ),
+        BaselineStep(
+            action=UnifiedIncidentAction(action_type="run_check", check_name="end_to_end"),
+            rationale="Verify /billing and /settings return 200 again.",
+        ),
+        BaselineStep(
+            action=UnifiedIncidentAction(action_type="run_check", check_name="database_recovery"),
+            rationale="Confirm DB read/write stayed healthy throughout.",
+        ),
+        BaselineStep(
+            action=UnifiedIncidentAction(action_type="declare_resolved"),
+            rationale="Declare resolved only after objective checks pass.",
+        ),
+    ]
+
+
+def _cache_stale_state_baseline() -> list[BaselineStep]:
+    return [
+        BaselineStep(
+            action=UnifiedIncidentAction(action_type="query_logs", service="cache"),
+            rationale="Support tickets point at stale/cross-user state; cache logs reveal the TTL change.",
+        ),
+        BaselineStep(
+            action=UnifiedIncidentAction(action_type="query_deploys", service="cache"),
+            rationale="Confirm the cache deploy that bumped TTL is the driver, not a gateway regression.",
+        ),
+        BaselineStep(
+            action=UnifiedIncidentAction(action_type="query_metrics", service="database", metric="cpu"),
+            rationale="Drop in DB read volume corroborates cache over-serving rather than a DB fault.",
+        ),
+        BaselineStep(
+            action=UnifiedIncidentAction(
+                action_type="submit_hypothesis",
+                hypothesis={
+                    "root_cause": "cache_ttl_regression",
+                    "affected_services": ["cache", "api-gateway"],
+                    "confidence": 0.85,
+                    "recommended_next_action": "rollback_deploy",
+                },
+            ),
+            rationale="Localize to the cache TTL deploy; gateway and DB are symptom-only.",
+        ),
+        BaselineStep(
+            action=UnifiedIncidentAction(action_type="rollback_deploy", service="cache"),
+            rationale="Roll back the TTL-bumping cache deploy.",
+        ),
+        BaselineStep(
+            action=UnifiedIncidentAction(action_type="restart_service", service="cache"),
+            rationale="Restart the cache to purge poisoned stale entries written under the bad TTL.",
+        ),
+        BaselineStep(
+            action=UnifiedIncidentAction(action_type="run_check", check_name="end_to_end"),
+            rationale="Verify fresh login shows own-user data, not stale snapshot.",
+        ),
+        BaselineStep(
+            action=UnifiedIncidentAction(action_type="run_check", check_name="database_recovery"),
+            rationale="Confirm DB read volume and cache-consistency window are back to baseline.",
+        ),
+        BaselineStep(
+            action=UnifiedIncidentAction(action_type="declare_resolved"),
+            rationale="Declare resolved only after objective checks pass.",
+        ),
+    ]
+
+
 _BASELINE_BUILDERS = {
     "worker_deploy_cascade": _worker_cascade_baseline,
     "db_config_rollout": _db_config_rollout_baseline,
     "gateway_auth_rollout": _gateway_auth_rollout_baseline,
+    "payment_webhook_misconfig": _payment_webhook_misconfig_baseline,
+    "schema_drift_missing_migration": _schema_drift_baseline,
+    "cache_stale_state": _cache_stale_state_baseline,
 }
 
 

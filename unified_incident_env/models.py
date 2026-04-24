@@ -37,6 +37,13 @@ ServiceName = Literal[
     "image-cdn",
     "feature-flags",
     "analytics",
+    # vibe-coded SaaS noise pool. Same rule: these never appear in
+    # service_health (agents can't query them), only in alerts as decoys.
+    "supabase-realtime",
+    "openai-proxy",
+    "sentry",
+    "clerk-auth",
+    "vercel-edge",
 ]
 ServiceStatus = Literal["healthy", "degraded", "crashed", "isolated"]
 WorkflowStage = Literal["triage", "mitigation", "validation", "resolved"]
@@ -45,6 +52,14 @@ RootCauseType = Literal[
     "bad_worker_deploy",
     "database_only_failure",
     "api_gateway_fault",
+    # vibe-coded SaaS failure modes (grounded in 2025-2026 production
+    # incidents: Replit/SaaStr, Base44, Tea app, and the Veracode/JFrog/
+    # Accorian research showing 45% of AI-generated code has security
+    # flaws, 88% of AI-generated logging is unsafe, 40% of AI-generated
+    # DB queries are SQL-injectable).
+    "payment_webhook_regression",
+    "schema_migration_mismatch",
+    "cache_ttl_regression",
 ]
 RecommendedActionType = Literal[
     "query_logs",

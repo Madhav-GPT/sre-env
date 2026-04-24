@@ -184,7 +184,14 @@ def test_hard_wrong_rollback_target_is_penalized() -> None:
 
 def test_all_scenarios_expose_noise_alerts() -> None:
     env = UnifiedIncidentEnvironment()
-    for scenario_id in ("worker_deploy_cascade", "db_config_rollout", "gateway_auth_rollout"):
+    for scenario_id in (
+        "worker_deploy_cascade",
+        "db_config_rollout",
+        "gateway_auth_rollout",
+        "payment_webhook_misconfig",
+        "schema_drift_missing_migration",
+        "cache_stale_state",
+    ):
         obs = env.reset(scenario_id=scenario_id)
         assert len(obs.noise_alerts) > 0, f"{scenario_id} should expose noise_alerts"
         assert all(alert.message for alert in obs.noise_alerts)
@@ -204,7 +211,14 @@ def test_baseline_ceiling_is_hardened_below_080() -> None:
     """Scripted-optimal baseline must not score above ~0.80. Headroom left
     for a trained agent that earns speed_bonus by finishing faster than
     optimal_ticks."""
-    for scenario_id in ("worker_deploy_cascade", "db_config_rollout", "gateway_auth_rollout"):
+    for scenario_id in (
+        "worker_deploy_cascade",
+        "db_config_rollout",
+        "gateway_auth_rollout",
+        "payment_webhook_misconfig",
+        "schema_drift_missing_migration",
+        "cache_stale_state",
+    ):
         obs = _run_baseline_for_scenario(scenario_id)
         assert obs is not None
         assert obs.final_score <= 0.80, f"{scenario_id} ceiling {obs.final_score} exceeds headroom budget"
@@ -244,6 +258,73 @@ def test_procgen_catalog_registers_variants_for_each_template() -> None:
     assert any(scenario_id.startswith("worker_deploy_cascade__p") for scenario_id in procgen_ids)
     assert any(scenario_id.startswith("db_config_rollout__p") for scenario_id in procgen_ids)
     assert any(scenario_id.startswith("gateway_auth_rollout__p") for scenario_id in procgen_ids)
+    assert any(scenario_id.startswith("payment_webhook_misconfig__p") for scenario_id in procgen_ids)
+    assert any(scenario_id.startswith("schema_drift_missing_migration__p") for scenario_id in procgen_ids)
+    assert any(scenario_id.startswith("cache_stale_state__p") for scenario_id in procgen_ids)
+
+
+def test_payment_webhook_baseline_resolves_honestly() -> None:
+    obs = _run_baseline_for_scenario("payment_webhook_misconfig")
+    assert obs is not None
+    assert obs.done is True
+    assert obs.incident_resolved is True
+    assert obs.final_score > 0.55
+
+
+def test_payment_webhook_wrong_rollback_target_is_penalized() -> None:
+    env = UnifiedIncidentEnvironment()
+    env.reset(scenario_id="payment_webhook_misconfig")
+    obs = env.step(UnifiedIncidentAction(action_type="rollback_deploy", service="worker"))
+    assert obs.reward < 0.0
+    assert obs.failure_type == "wrong_remediation_target"
+
+
+def test_schema_drift_baseline_resolves_honestly() -> None:
+    obs = _run_baseline_for_scenario("schema_drift_missing_migration")
+    assert obs is not None
+    assert obs.done is True
+    assert obs.incident_resolved is True
+    assert obs.final_score > 0.55
+
+
+def test_schema_drift_wrong_rollback_target_is_penalized() -> None:
+    env = UnifiedIncidentEnvironment()
+    env.reset(scenario_id="schema_drift_missing_migration")
+    obs = env.step(UnifiedIncidentAction(action_type="rollback_deploy", service="database"))
+    assert obs.reward < 0.0
+    assert obs.failure_type == "wrong_remediation_target"
+
+
+def test_cache_stale_state_baseline_resolves_honestly() -> None:
+    obs = _run_baseline_for_scenario("cache_stale_state")
+    assert obs is not None
+    assert obs.done is True
+    assert obs.incident_resolved is True
+    assert obs.final_score > 0.55
+
+
+def test_cache_stale_state_requires_cache_rollback() -> None:
+    env = UnifiedIncidentEnvironment()
+    env.reset(scenario_id="cache_stale_state")
+    obs = env.step(UnifiedIncidentAction(action_type="rollback_deploy", service="api-gateway"))
+    assert obs.reward < 0.0
+    assert obs.failure_type == "wrong_remediation_target"
+
+
+def test_catalog_has_six_scenario_templates() -> None:
+    templates = {
+        scenario_id
+        for scenario_id, scenario in SCENARIOS.items()
+        if not scenario.get("is_procgen")
+    }
+    assert templates == {
+        "worker_deploy_cascade",
+        "db_config_rollout",
+        "gateway_auth_rollout",
+        "payment_webhook_misconfig",
+        "schema_drift_missing_migration",
+        "cache_stale_state",
+    }
 
 
 def test_scenario_for_difficulty_seed_is_deterministic() -> None:
