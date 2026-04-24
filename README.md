@@ -228,39 +228,62 @@ Expected solve output:
 
 ## Training pipeline
 
-The env is built to be trained against. The pipeline has three components, all included:
+The env is built to be trained against. The pipeline has four components, all included:
 
-**1. Claude-teacher seed dataset** (shipped in `train/data/`)
+**1. Mixed-teacher seed dataset** (shipped in `train/data/seed_combined.jsonl`)
 
-6 trajectories driven by Claude Opus 4.7 against the live env, no runbook knowledge. Each trajectory is a full `(prompt, response_text, action, reward)` trace per step. Compiled format matches `collect_trajectories.py` output, so downstream SFT/GRPO pipelines treat seed data identically to API-driven data.
+Two-teacher warm-start corpus built deliberately for SFT → GRPO:
 
-| scenario | score | steps |
-|---|---|---|
-| worker_deploy_cascade | 0.773 | 7 |
-| worker_deploy_cascade\_\_p02 | 0.773 | 7 |
-| db_config_rollout | 0.785 | 7 |
-| db_config_rollout\_\_p01 | 0.785 | 7 |
-| gateway_auth_rollout | 0.714 | 5 |
-| gateway_auth_rollout\_\_p03 | 0.781 | 6 |
+| Teacher | Episodes | Mean score | Role |
+|---|---|---|---|
+| Claude Opus 4.7 (hand-driven via pool server) | 6 | 0.769 | Expert demos — author-optimal paths, all resolved |
+| Llama-3.3-70B-Instruct via Fireworks | 4+ | 0.725 | Realistic agent — noisier, some unresolved |
+| Llama-3.3-70B-Versatile via Groq free tier | growing | varies | Even noisier, higher-entropy rollouts for GRPO |
+
+The variance between teachers is deliberate — Claude teaches format + optimal paths; Llama teaches what realistic-agent failure looks like. 78+ usable samples, growing. All 6 scenario templates covered.
 
 **2. Parallel async trajectory collection** (`train/collect_trajectories.py`)
 
-Claude-driven dataset generator. Two drivers: `anthropic` (real Claude API) and `heuristic` (dumb baseline, useful for floor). Async worker pool over scenarios × models × episodes. Writes canonical JSONL.
+Async worker pool. Four drivers:
+- `--driver anthropic` — Claude via Anthropic API
+- `--driver fireworks` — any Fireworks-served model (Llama-3.3-70B, DeepSeek-V3.1, Kimi-K2.5)
+- `--driver groq` — any Groq-served model (Llama-3.3-70B-Versatile on free tier, ~14K req/day)
+- `--driver heuristic` — deterministic dumb baseline (floor)
+
+All handle 429 `Retry-After` with jittered backoff so free-tier rate limits don't cascade into silent heuristic fallback.
 
 ```bash
 python train/collect_trajectories.py \
   --env-url https://dakshdoesdev-sre-gym.hf.space \
   --scenarios all \
-  --models claude-sonnet-4-6,claude-haiku-4-5-20251001 \
-  --episodes-per-model 1000 \
-  --parallelism 16 \
-  --driver anthropic \
-  --output train/data/claude_2k.jsonl
+  --models "llama-3.3-70b-versatile" \
+  --episodes-per-model 100 \
+  --parallelism 3 \
+  --driver groq \
+  --output train/data/llama33_70b_groq_100.jsonl
 ```
 
-**3. Unsloth + TRL SFT sanity notebook** (`train/sanity_run.ipynb`)
+**3. Unsloth + TRL SFT notebook** (`train/sanity_run.ipynb`)
 
-Colab-ready. Loads Qwen3.5 4B in 4-bit via Unsloth, runs 200 LoRA SFT steps on toy data, logs to wandb, saves a checkpoint. Verifies the pipeline compiles before the real hackathon training run. Falls back to Qwen3 4B if Unsloth can't load Qwen3.5.
+Colab-ready. Loads Qwen3.5 4B in 4-bit via Unsloth (fallback Qwen3 4B), LoRA r=32 on 7 projection modules, runs 500 SFT steps on `seed_combined.jsonl`, pushes adapter to `dakshdoesdev/sre-gym-qwen35-4b-sft`. ~20 min on A100 40GB. Inference cell validates JSON action format compliance.
+
+**4. GRPO online notebook** (`train/grpo_run.ipynb`)
+
+Colab-ready. Loads the SFT LoRA, boots our OpenClaw pool server on the same VM, runs 300 GRPO steps. Each step samples a scenario and rolls out K=4 trajectories with the current policy; reward = `env.evaluate()['score']` (deterministic scalar from grader, no PRM or LLM-as-judge); group-relative advantages applied via simple policy gradient. Pushes to `dakshdoesdev/sre-gym-qwen35-4b-grpo` every 25 steps. Wandb-logged training curve.
+
+**5. Eval sweep** (`train/eval_sweep.py`)
+
+Comparison-table generator. Runs N episodes per scenario per policy against a live env, writes JSONL + summary. Supports `random`, `heuristic`, `groq`, `fireworks`, `anthropic` policies. The trained model's numbers come from the GRPO notebook's final held-out eval cell (matches the same schema).
+
+```bash
+python train/eval_sweep.py \
+  --env-url https://dakshdoesdev-sre-gym.hf.space \
+  --scenarios all \
+  --policies random,heuristic,groq \
+  --groq-model llama-3.3-70b-versatile \
+  --episodes-per-scenario 5 \
+  --output train/data/eval_sweep.jsonl
+```
 
 Full Friday plan: 2000 Claude-teacher trajectories → Qwen3.5 4B SFT cold start → OpenClaw-RL GRPO run against the pool server → 100-episode eval sweep across {random, untrained-3B, Haiku, Sonnet, trained-3B} → comparison table.
 
