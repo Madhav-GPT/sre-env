@@ -10,3 +10,8 @@ AGENTS.md
 .sisyphus/
 *.egg-info/
 uv.lock
+
+# secrets
+.env
+.env.*
+secrets/
