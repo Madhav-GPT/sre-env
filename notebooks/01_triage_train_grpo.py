@@ -84,14 +84,16 @@ REQUIRED = ["unsloth", "trl", "vllm", "datasets", "transformers", "matplotlib", 
 if _all_installed(REQUIRED):
     print("All deps already installed — skipping pip install")
 else:
-    print("Installing deps — this is 8-15 min on first run (vLLM + Unsloth pull ~3 GB).")
-    print("Progress is printed live below. If you don't see new lines for >2 min, open a")
-    print("Terminal and run `ps aux | grep pip` to verify it's still working.\n")
+    # Fallback path for users who haven't pre-installed via Unsloth's pattern.
+    # If you're using Unsloth's official install in a separate cell, this branch
+    # never runs.
+    print("Installing deps — this is 8-15 min on first run.")
     subprocess.check_call([sys.executable, "-m", "pip", "install", "--upgrade", "pip"])
-    subprocess.check_call([sys.executable, "-m", "pip", "install", "-e", ".[dev,train]"])
+    subprocess.check_call([sys.executable, "-m", "pip", "install", "--no-deps", "-e", "."])
     subprocess.check_call([sys.executable, "-m", "pip", "install",
-                            "unsloth", "trl>=1.0,<2.0", "vllm",
-                            "datasets", "accelerate", "matplotlib", "pandas"])
+                            "unsloth", "trl", "vllm",
+                            "datasets", "accelerate", "matplotlib", "pandas",
+                            "httpx", "fastapi", "pydantic>=2.0"])
     print("\n✓ Deps installed")
 
 # ---- Step 3: GPU sanity check via nvidia-smi (before importing torch) ----
@@ -547,6 +549,8 @@ GRPO_OUT = Path("outputs/grpo_final")
 
 
 def _build_grpo_args(use_vllm: bool):
+    # TRL 0.22.2 (Unsloth's recommended): max_prompt_length exists, vllm_max_model_length doesn't.
+    # TRL 1.x: vllm_max_model_length exists, max_prompt_length removed. We target 0.22.2.
     return GRPOConfig(
         output_dir="outputs/grpo",
         num_generations=4,
@@ -555,10 +559,10 @@ def _build_grpo_args(use_vllm: bool):
         per_device_train_batch_size=1,
         gradient_accumulation_steps=8,
         num_train_epochs=1,
+        max_prompt_length=2048,
         max_completion_length=256,
         use_vllm=use_vllm,
         vllm_gpu_memory_utilization=0.5 if use_vllm else 0.0,
-        vllm_max_model_length=4096 if use_vllm else None,
         beta=0.04,
         temperature=0.7,
         logging_steps=5,
