@@ -29,20 +29,21 @@ In July 2025, a Replit Agent deleted Jason Lemkin's SaaStr production database d
 
 ## Frontier baselines on this env
 
-The env is **calibrated to discriminate**. Real measurements from the live HF Space, recorded April 24-25 2026:
+The env is **calibrated to discriminate**. All numbers from real episodes, recorded April 24-25 2026:
 
-| Policy | Episodes | Resolved | Mean score |
-|---|---|---|---|
-| Heuristic (deterministic, no LLM) | 9 | 0/9 | **0.13** |
-| Llama-3.3-70B-Versatile (Groq) | 11 | 5/11 | **0.42** |
-| Scripted-optimal baseline | 3 | 3/3 | ≤ 0.80 |
-| Llama-3.3-70B-Instruct (Fireworks) | 4 | 3/4 | **0.73** |
-| Claude Opus 4.7 (hand-driven, expert demos) | 6 | 6/6 | **0.77** |
-| **Trained Qwen3.5 4B (target — pending GRPO run)** | — | — | **target ≥ 0.80** |
+| Policy | Episodes | Resolved | Mean score | Source |
+|---|---|---|---|---|
+| Heuristic (deterministic, no LLM) | 18 | 0/18 | **0.19** | `train/data/eval_sweep_baselines.jsonl` |
+| Random (uniform over allowed actions) | 12 | 0/12 | **0.35** | `train/data/eval_sweep_baselines.jsonl` |
+| Llama-3.3-70B-Versatile (Groq) | 11 | 5/11 | **0.42** | `train/data/llama33_70b_groq_*.jsonl` |
+| Llama-3.3-70B-Instruct (Fireworks) | 4 | 3/4 | **0.73** | `train/data/llama33_70b_smoke4.jsonl` |
+| Scripted-optimal baseline | 3 | 3/3 | ≤ 0.80 | enforced by `tests/test_baseline_ceiling_is_hardened_below_080` |
+| Claude Opus 4.7 (hand-driven, expert demos) | 6 | 6/6 | **0.77** | `train/data/claude_seed.jsonl` |
+| **Trained Qwen3.5 4B (target — pending GRPO run)** | — | — | **target ≥ 0.80** | `dakshdoesdev/sre-gym-qwen35-4b-grpo` (in flight) |
 
-A 0.55 spread between Llama-70B-via-Groq (0.42) and Claude Opus (0.77) means this env actually measures capability — it's not saturated by a strong LLM and not unsolvable for a weak one. That's the headroom band a trained 3B specialist can compete in.
+A **0.58-wide spread** (0.19 → 0.77) between deterministic-heuristic and Claude Opus means this env actually measures capability — not saturated by a strong LLM, not unsolvable for a weak one. That's the headroom band a trained 3B specialist competes in.
 
-Reproduce any row via `train/eval_sweep.py --policies <policy>` against the live Space. Raw episode JSONLs are in `train/data/`.
+Reproduce any row via `python train/eval_sweep.py --policies <policy> --episodes-per-scenario 3 --output ...` against the live Space. Raw per-episode JSONLs are in `train/data/`.
 
 ---
 

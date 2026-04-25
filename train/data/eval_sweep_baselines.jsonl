@@ -1,0 +1,36 @@
+{"scenario_id": "db_config_rollout", "policy": "random", "episode_idx": 0, "error": "RuntimeError: Server error: 'cache' (code: EXECUTION_ERROR)"}
+{"scenario_id": "worker_deploy_cascade", "policy": "random", "episode_idx": 0, "error": "RuntimeError: Server error: 'cache' (code: EXECUTION_ERROR)"}
+{"scenario_id": "worker_deploy_cascade", "policy": "random", "model": "random", "final_score": 0.139, "incident_resolved": false, "steps": 12, "elapsed_s": 0.032, "episode_idx": 2}
+{"scenario_id": "worker_deploy_cascade", "policy": "random", "model": "random", "final_score": 0.3675, "incident_resolved": false, "steps": 12, "elapsed_s": 0.033, "episode_idx": 1}
+{"scenario_id": "db_config_rollout", "policy": "random", "model": "random", "final_score": 0.3, "incident_resolved": false, "steps": 12, "elapsed_s": 0.023, "episode_idx": 1}
+{"scenario_id": "db_config_rollout", "policy": "random", "model": "random", "final_score": 0.18, "incident_resolved": false, "steps": 12, "elapsed_s": 0.023, "episode_idx": 2}
+{"scenario_id": "gateway_auth_rollout", "policy": "random", "model": "random", "final_score": 0.305, "incident_resolved": false, "steps": 10, "elapsed_s": 0.02, "episode_idx": 0}
+{"scenario_id": "gateway_auth_rollout", "policy": "random", "model": "random", "final_score": 0.729, "incident_resolved": false, "steps": 10, "elapsed_s": 0.02, "episode_idx": 1}
+{"scenario_id": "gateway_auth_rollout", "policy": "random", "model": "random", "final_score": 0.3, "incident_resolved": false, "steps": 10, "elapsed_s": 0.021, "episode_idx": 2}
+{"scenario_id": "payment_webhook_misconfig", "policy": "random", "episode_idx": 0, "error": "RuntimeError: Server error: 'cache' (code: EXECUTION_ERROR)"}
+{"scenario_id": "payment_webhook_misconfig", "policy": "random", "model": "random", "final_score": 0.3375, "incident_resolved": false, "steps": 12, "elapsed_s": 0.025, "episode_idx": 1}
+{"scenario_id": "payment_webhook_misconfig", "policy": "random", "model": "random", "final_score": 0.3425, "incident_resolved": false, "steps": 12, "elapsed_s": 0.024, "episode_idx": 2}
+{"scenario_id": "schema_drift_missing_migration", "policy": "random", "episode_idx": 0, "error": "RuntimeError: Server error: 'latency' (code: EXECUTION_ERROR)"}
+{"scenario_id": "cache_stale_state", "policy": "random", "episode_idx": 0, "error": "RuntimeError: Server error: 'error_rate' (code: EXECUTION_ERROR)"}
+{"scenario_id": "schema_drift_missing_migration", "policy": "random", "episode_idx": 1, "error": "RuntimeError: Server error: 'cpu' (code: EXECUTION_ERROR)"}
+{"scenario_id": "schema_drift_missing_migration", "policy": "random", "model": "random", "final_score": 0.286, "incident_resolved": false, "steps": 12, "elapsed_s": 0.025, "episode_idx": 2}
+{"scenario_id": "cache_stale_state", "policy": "random", "model": "random", "final_score": 0.549, "incident_resolved": false, "steps": 12, "elapsed_s": 0.025, "episode_idx": 1}
+{"scenario_id": "cache_stale_state", "policy": "random", "model": "random", "final_score": 0.306, "incident_resolved": false, "steps": 12, "elapsed_s": 0.024, "episode_idx": 2}
+{"scenario_id": "worker_deploy_cascade", "policy": "heuristic", "model": "heuristic", "final_score": 0.119, "incident_resolved": false, "steps": 12, "elapsed_s": 0.022, "episode_idx": 0}
+{"scenario_id": "worker_deploy_cascade", "policy": "heuristic", "model": "heuristic", "final_score": 0.119, "incident_resolved": false, "steps": 12, "elapsed_s": 0.022, "episode_idx": 1}
+{"scenario_id": "worker_deploy_cascade", "policy": "heuristic", "model": "heuristic", "final_score": 0.119, "incident_resolved": false, "steps": 12, "elapsed_s": 0.022, "episode_idx": 2}
+{"scenario_id": "db_config_rollout", "policy": "heuristic", "model": "heuristic", "final_score": 0.165, "incident_resolved": false, "steps": 12, "elapsed_s": 0.022, "episode_idx": 0}
+{"scenario_id": "db_config_rollout", "policy": "heuristic", "model": "heuristic", "final_score": 0.165, "incident_resolved": false, "steps": 12, "elapsed_s": 0.02, "episode_idx": 1}
+{"scenario_id": "db_config_rollout", "policy": "heuristic", "model": "heuristic", "final_score": 0.165, "incident_resolved": false, "steps": 12, "elapsed_s": 0.021, "episode_idx": 2}
+{"scenario_id": "gateway_auth_rollout", "policy": "heuristic", "model": "heuristic", "final_score": 0.195, "incident_resolved": false, "steps": 10, "elapsed_s": 0.019, "episode_idx": 0}
+{"scenario_id": "gateway_auth_rollout", "policy": "heuristic", "model": "heuristic", "final_score": 0.195, "incident_resolved": false, "steps": 10, "elapsed_s": 0.021, "episode_idx": 1}
+{"scenario_id": "gateway_auth_rollout", "policy": "heuristic", "model": "heuristic", "final_score": 0.195, "incident_resolved": false, "steps": 10, "elapsed_s": 0.02, "episode_idx": 2}
+{"scenario_id": "payment_webhook_misconfig", "policy": "heuristic", "model": "heuristic", "final_score": 0.2375, "incident_resolved": false, "steps": 12, "elapsed_s": 0.022, "episode_idx": 0}
+{"scenario_id": "payment_webhook_misconfig", "policy": "heuristic", "model": "heuristic", "final_score": 0.2375, "incident_resolved": false, "steps": 12, "elapsed_s": 0.022, "episode_idx": 1}
+{"scenario_id": "payment_webhook_misconfig", "policy": "heuristic", "model": "heuristic", "final_score": 0.2375, "incident_resolved": false, "steps": 12, "elapsed_s": 0.021, "episode_idx": 2}
+{"scenario_id": "schema_drift_missing_migration", "policy": "heuristic", "model": "heuristic", "final_score": 0.206, "incident_resolved": false, "steps": 12, "elapsed_s": 0.021, "episode_idx": 0}
+{"scenario_id": "schema_drift_missing_migration", "policy": "heuristic", "model": "heuristic", "final_score": 0.206, "incident_resolved": false, "steps": 12, "elapsed_s": 0.023, "episode_idx": 1}
+{"scenario_id": "schema_drift_missing_migration", "policy": "heuristic", "model": "heuristic", "final_score": 0.206, "incident_resolved": false, "steps": 12, "elapsed_s": 0.022, "episode_idx": 2}
+{"scenario_id": "cache_stale_state", "policy": "heuristic", "model": "heuristic", "final_score": 0.201, "incident_resolved": false, "steps": 12, "elapsed_s": 0.021, "episode_idx": 0}
+{"scenario_id": "cache_stale_state", "policy": "heuristic", "model": "heuristic", "final_score": 0.201, "incident_resolved": false, "steps": 12, "elapsed_s": 0.022, "episode_idx": 1}
+{"scenario_id": "cache_stale_state", "policy": "heuristic", "model": "heuristic", "final_score": 0.201, "incident_resolved": false, "steps": 12, "elapsed_s": 0.011, "episode_idx": 2}
