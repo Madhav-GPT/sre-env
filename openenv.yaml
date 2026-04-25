@@ -14,6 +14,14 @@ environment:
   max_steps: 12
   difficulties: [easy, medium, hard]
   reward_type: dense
+  # GRPO/TRL training contract: parallel env instances per training step.
+  # Required for the OpenEnv batched-rollout pattern documented at
+  # https://huggingface.co/docs/trl/openenv.
+  max_concurrent_envs: 64
+  scenario_count: 30
+  scenario_templates: 6
+  procgen_variants_per_template: 5
+  deterministic_seeded: true
 
 huggingface:
   space_id: dakshdoesdev/sre-gym
