@@ -236,7 +236,7 @@ import pandas as pd
 from datasets import Dataset
 from transformers import AutoTokenizer
 
-MODEL_NAME = "unsloth/Qwen2.5-3B-bnb-4bit"
+MODEL_NAME = "unsloth/Qwen2.5-3B-Instruct-bnb-4bit"
 MAX_SEQ_LEN = 4096
 
 tokenizer_for_chat = AutoTokenizer.from_pretrained(MODEL_NAME)
@@ -305,7 +305,7 @@ print(f"\n✓ Built SFT dataset: {len(sft_dataset)} examples")
 # %%
 from unsloth import FastLanguageModel
 
-MODEL_NAME = "unsloth/Qwen2.5-3B-bnb-4bit"
+MODEL_NAME = "unsloth/Qwen2.5-3B-Instruct-bnb-4bit"
 MAX_SEQ_LEN = 4096
 
 model, tokenizer = FastLanguageModel.from_pretrained(
