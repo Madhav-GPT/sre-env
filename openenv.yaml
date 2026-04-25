@@ -1,14 +1,28 @@
 name: sre-engineer-llm
-version: 3.0.0
+version: 3.1.0
 description: >
-  Tier-escalating SRE training environment for vibe-coded SaaS. Three tiers
-  escalate three different dimensions: Basic (compute), Advanced (horizon),
-  Max (realism). The Basic tier — runnable here on the HF Space — ships 12
-  templates x 5 procgen variants = 72 deterministic scenarios for incident
-  diagnosis and safe remediation against a 4-service topology, with a hardened
-  scripted-optimal ceiling of <=0.80 leaving headroom for trained agents.
-  Advanced and Max tiers are documented as design space (3 reference
-  scenarios + 1 fully-specced family with docker-compose + chaos library).
+  Tier-escalating SRE training environment. Three tiers escalate three
+  different dimensions: Basic (compute), Advanced (horizon), Max (realism).
+
+  Basic ships 12 templates x 6 entries each (1 base + 5 procgen variants) =
+  72 deterministic scenarios over a 4-service topology, with a hardened
+  scripted-optimal ceiling of <=0.80.
+
+  Advanced runs as a Python orchestrator that chains Basic episodes with
+  persistent horizon state (unresolved alerts, pending deploys, tech-debt
+  counter, horizon-decay reward). It does not simulate a 15-20 service
+  topology faithfully -- the YAMLs declare a richer action set as a design
+  spec only.
+
+  Max runs as a Python state-machine simulator over a 22-node service graph
+  using the same 11-action interface as Basic. The docker-compose stack
+  under sre_gym/max/families/ references stub images that are not published;
+  it is shipped as design spec, not as runnable infrastructure.
+
+  Training is not committed to this repo. See notebooks/01 for the GRPO
+  pipeline that needs to be executed externally (Colab A100). The README
+  baseline tables show frontier-LLM measurements only; the trained-model
+  row is intentionally absent until a real run is committed.
 author: Daksh Verma
 license: Apache-2.0
 
@@ -23,33 +37,73 @@ environment:
   # Required for the OpenEnv batched-rollout pattern documented at
   # https://huggingface.co/docs/trl/openenv.
   max_concurrent_envs: 64
-  scenario_count: 72
+  scenario_count: 72                     # 12 templates x 6 entries (1 base + 5 procgen)
   scenario_templates: 12
-  procgen_variants_per_template: 5
+  procgen_variants_per_template: 5       # 5 variants per template; 6 entries total each
   deterministic_seeded: true
-  tier: basic                          # the runnable surface served by this Space
-  tier_escalation_dimension: compute   # see docs/ARCHITECTURE.md for full design
+  tier: basic                            # the runnable surface served by this Space
+  tier_escalation_dimension: compute     # see docs/ARCHITECTURE.md for full design
 
 tiers:
   basic:
     runnable: true
+    runnable_kind: live_environment       # real /reset + /step routes against the live env
     escalation_dimension: compute
     persona: "ML student / Kaggle, $30 of HF credits"
     scenario_count: 72
+    notes: "12 base templates + 5 procgen variants each = 72 deterministic scenarios."
   advanced:
-    runnable: false
+    runnable: true
+    runnable_kind: python_orchestrator    # chained Basic episodes with horizon state
     escalation_dimension: horizon
     persona: "seed/Series A startup, $300-500 budget"
     scenario_count: 3
     docs: docs/ADVANCED_TIER.md
+    notes: >
+      Advanced runs each scenario as a sequence of Basic episodes glued
+      together by the horizon-state object (unresolved alerts, pending
+      deploys, tech-debt counter, horizon-decay reward). It is NOT a
+      simulator of a 15-20 service topology; the wider action universe
+      declared in the YAMLs (~28 actions / scenario) is design spec
+      only and is not implemented in the env.
   max:
-    runnable: false
+    runnable: true
+    runnable_kind: python_simulator       # graph state machine, not real cluster
     escalation_dimension: realism
     persona: "enterprise SRE platform, 8x A100/H100"
-    scenario_count: 1
+    scenario_count: 1                     # one specced family
+    chaos_pattern_count: 12               # includes one alias (payment_webhook_storm)
     docs: docs/MAX_TIER.md
+    notes: >
+      Max runs as an in-memory 22-node graph mutator. Reuses the Basic
+      11-action interface; correct_action across patterns is heavily
+      skewed toward rollback_deploy (11/12) so the patterns are
+      separable on observation alone -- not a hidden-information
+      benchmark. The compose file under sre_gym/max/families/ references
+      stub images that are NOT published; do not attempt `docker compose
+      up` expecting it to pull successfully.
+
+training:
+  status: pending
+  pipeline: notebooks/01_basic_train_grpo_unsloth.ipynb
+  comparison: notebooks/02_basic_eval_comparison.ipynb
+  expected_artifacts:
+    - eval/results/comparison_hero.png
+    - dakshdoesdev/sre-gym-qwen25-3b-grpo  (HF Hub adapter)
+  current_artifacts: []                   # nothing committed until a real run lands
+  trajectory_corpus:
+    seed_combined_jsonl_rows: 21
+    templates_with_teacher_data: 6        # of 12 -- the 6 round-2 templates have none yet
+    templates_without_teacher_data:
+      - auth_token_expiry
+      - dep_degradation
+      - memory_leak_oom
+      - migration_lock
+      - network_partition
+      - rate_limit_retry_storm
 
 huggingface:
-  space_id: dakshdoesdev/sre-gym
+  space_id: Madhav189/sre-env             # current authoritative HF Space
+  github_repo: dakshdoesdev/sre-enginnerllm  # repo name has a known typo (enginner)
   sdk: docker
   hardware: cpu-basic

@@ -3,9 +3,9 @@ requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [project]
-name = "sre-gym"
-version = "3.0.0"
-description = "Tier-escalating SRE training environment (Basic / Advanced / Max). OpenEnv-compliant. The Basic tier ships 12 templates x 5 procgen variants and is trainable end-to-end on a single A100 in ~12h. Advanced and Max tiers are documented as design space (see docs/ARCHITECTURE.md)."
+name = "sre-engineer-llm"
+version = "3.1.0"
+description = "Tier-escalating SRE training environment. Basic ships 12 base templates with 5 procgen variants each (72 scenarios) as a runnable RL env; Advanced and Max ship as runnable Python orchestrators that approximate larger designs documented in their YAMLs. Training pipeline ships runnable in notebooks/01 but is not yet executed in this repo. See README.md and docs/ARCHITECTURE.md for the full state."
 readme = "README.md"
 requires-python = ">=3.10"
 dependencies = [

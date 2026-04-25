@@ -2,7 +2,7 @@
 
 install:
 	python3 -m pip install -e ".[dev]"
-	@echo "Dependencies installed (sre-gym 3.0.0 — Basic tier runnable, Advanced/Max design-only)"
+	@echo "Dependencies installed (sre-engineer-llm 3.1.0 — Basic tier runnable, Advanced/Max runnable as Python orchestrators with design-spec YAMLs)"
 
 install-train:
 	python3 -m pip install -e ".[dev,train]"

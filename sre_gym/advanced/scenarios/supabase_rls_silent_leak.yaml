@@ -1,3 +1,31 @@
+# ============================================================================
+# DESIGN-SPEC HEADER (added 2026-04-26 in response to peer review)
+#
+# This YAML declares an Advanced-tier reference scenario. The Advanced runner
+# (sre_gym/advanced/runner.py) executes this scenario by chaining Basic-tier
+# episodes with persistent horizon state -- it does NOT implement the wider
+# action universe declared below as `allowed_actions:`.
+#
+# Implemented actions (the same 11 Basic actions, no more):
+#   query_logs          query_metrics       query_dependencies
+#   query_deploys       rollback_deploy     restart_service
+#   isolate_service     run_check           submit_hypothesis
+#   escalate            declare_resolved
+#
+# Everything else listed under `allowed_actions:` here -- query_traces,
+# query_recent_prs, read_diff, feature_flag_toggle, propose_postmortem,
+# escalate_security, draft_customer_comm, query_session_cardinality,
+# query_audit_log, etc. -- is **design-spec only**. There are no Python
+# handlers for those actions; they exist to document where the Advanced
+# tier *would* go with another 1-2 weeks of focused engineering.
+#
+# The Advanced runner therefore approximates these scenarios by mapping each
+# phase to a Basic template (see PHASE_TO_BASIC_TEMPLATE in runner.py) and
+# scoring against the Basic env's grader. The horizon-decay factor and the
+# unresolved-alerts/pending-deploys carry-over are real; the scenario-level
+# fidelity is intentionally narrative-only.
+# ============================================================================
+
 # Advanced tier reference scenario #3
 #
 # THEME: Security-aware incident response. The "incident" is a Supabase RLS

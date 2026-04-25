@@ -3,21 +3,35 @@
 Three tiers, three different escalation dimensions:
 
 - ``Tier.BASIC``    — bounded by **compute**.  Pre-digested observations, 8K
-  context, in-process simulator, 12 templates × 6 procgen variants = 72 scenarios.
-  Trainable end-to-end on a single A100 in <12h. **The only tier shipped
-  runnable; the other two are documented as design space.**
-- ``Tier.ADVANCED`` — bounded by **horizon**.  Multi-incident sequences, 15-20
-  service topology, partial-observability noise, ~25 actions.  Three concrete
-  reference scenarios in ``sre_gym/advanced/scenarios/`` plus a design doc; not
-  trainable in this repo.
-- ``Tier.MAX``      — bounded by **realism**.  Ephemeral docker-compose / k3d
-  stacks per ``reset()``, real ``kubectl rollout undo`` / Vercel API calls,
-  Chaos-Mesh-style fault injection.  One fully-specced scenario family
-  (e-commerce + Stripe + Supabase + Vercel) with ``compose.max.yaml`` and a
-  Chaos-style spec; runnable infrastructure not provisioned in this repo.
+  context, in-process simulator, 12 base templates each with 5 procgen
+  variants (so 6 entries per template, 72 total scenarios).  The only tier
+  whose runner is a live HTTP environment.
 
-The dimensional-escalation insight: each tier escalates a *different* axis, not
-just scenario count.  See ``docs/ARCHITECTURE.md`` for the full rationale.
+- ``Tier.ADVANCED`` — bounded by **horizon**.  A Python orchestrator that
+  chains Basic episodes together with persistent horizon state (unresolved
+  alerts, pending deploys, tech-debt counter, horizon-decay reward).
+  ``sre_gym/advanced/scenarios/*.yaml`` declare a richer ~28-action universe
+  as **design spec**; those extra actions are NOT implemented in the env.
+  The runner falls back to the Basic 11-action interface.
+
+- ``Tier.MAX``      — bounded by **realism**.  A Python state-machine
+  simulator over a 22-node service graph.  Same 11 Basic actions; chaos
+  patterns are state-transition rules over the in-memory graph.
+  ``sre_gym/max/families/.../compose/ecommerce.yaml`` describes a real
+  docker-compose stack but the stub images (``ghcr.io/sre-gym/...``) are
+  NOT published; treat the compose file as design-spec only.
+
+All three tiers are *runnable* via ``SREGym(tier=...).run(...)`` and the
+respective ``python -m sre_gym.<tier> run ...`` CLIs.  Only Basic exposes a
+live HTTP environment with /reset + /step routes; Advanced and Max are
+in-process orchestrators.
+
+Training (notebooks/01_basic_train_grpo_unsloth.ipynb) is **not committed to
+this repo**.  Run it externally on Colab A100 and publish the resulting
+adapter + comparison plots to ``eval/results/``.
+
+The dimensional-escalation insight: each tier escalates a *different* axis,
+not just scenario count.  See ``docs/ARCHITECTURE.md`` for the full rationale.
 
 Quick start
 -----------
