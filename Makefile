@@ -1,20 +1,37 @@
-.PHONY: install dev test baseline walkthrough trainer-eval trainer-dataset trainer-session docker-build docker-run validate clean
+.PHONY: install dev test test-tier1 test-wrapper baseline scripted-baseline tier-info walkthrough trainer-eval trainer-dataset trainer-session docker-build docker-run validate clean
 
 install:
 	python3 -m pip install -e ".[dev]"
-	@echo "Dependencies installed"
+	@echo "Dependencies installed (sre-gym 3.0.0 — Basic tier runnable, Advanced/Max design-only)"
+
+install-train:
+	python3 -m pip install -e ".[dev,train]"
+	@echo "Train deps installed (Unsloth + TRL pulled separately in notebook 01)"
 
 dev:
 	ENABLE_WEB_INTERFACE=true uvicorn server.app:app --reload --host 0.0.0.0 --port 8000
 
 test:
-	pytest unified_incident_env/tests -v --tb=short
+	pytest unified_incident_env/tests tests/ -v --tb=short
+
+test-tier1:
+	pytest unified_incident_env/tests/test_round2_templates.py -v --tb=short
+
+test-wrapper:
+	pytest tests/test_sre_gym_wrapper.py -v --tb=short
 
 baseline:
-	python -m unified_incident_env.scripts.baseline_agent
+	python scripts/eval_baseline.py --templates-only
+
+scripted-baseline:
+	python scripts/eval_baseline.py --output eval/results/scripted_baseline.jsonl
+
+tier-info:
+	python -c "from sre_gym import SREGym, Tier; \
+		[print(f'\\n=== {t.value} ==='), [print(f'  {k:<28} {v}') for k,v in SREGym(tier=t).describe().items()]] for t in Tier"
 
 walkthrough:
-	python -m unified_incident_env.scripts.walkthrough --scenario easy_sqli_db_outage
+	python -m unified_incident_env.scripts.walkthrough --scenario worker_deploy_cascade
 
 trainer-eval:
 	python -m unified_incident_env.trainer.eval_models --models qwen2.5:0.5b gemma2:2b qwen2.5:7b-instruct-q4_K_M --mode strict

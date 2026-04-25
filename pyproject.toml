@@ -3,9 +3,9 @@ requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [project]
-name = "unified-incident-env"
-version = "1.0.0"
-description = "Unified OpenEnv benchmark for incident response with causally linked WebSec remediation"
+name = "sre-gym"
+version = "3.0.0"
+description = "Tier-escalating SRE training environment (Basic / Advanced / Max). OpenEnv-compliant. The Basic tier ships 12 templates x 5 procgen variants and is trainable end-to-end on a single A100 in ~12h. Advanced and Max tiers are documented as design space (see docs/ARCHITECTURE.md)."
 readme = "README.md"
 requires-python = ">=3.10"
 dependencies = [
@@ -18,13 +18,23 @@ dependencies = [
     "websockets>=12.0",
     "rich>=13.0.0",
     "matplotlib>=3.9.0",
-    "numpy>=2.0.0"
+    "numpy>=2.0.0",
+    "pyyaml>=6.0",
+    "pandas>=2.0.0"
 ]
 
 [project.optional-dependencies]
 dev = [
     "pytest>=8.0.0",
     "pytest-asyncio>=0.23.0"
+]
+train = [
+    "datasets>=3.0",
+    "transformers>=4.46",
+    "peft>=0.13",
+    "accelerate>=1.1",
+    "trl>=0.12.0",
+    "anthropic>=0.40.0"
 ]
 
 [project.scripts]
@@ -40,4 +50,10 @@ trainer-run-session = "unified_incident_env.trainer.run_session:main"
 trainer-train-external = "unified_incident_env.trainer.train_external:main"
 
 [tool.hatch.build.targets.wheel]
-packages = ["unified_incident_env", "server"]
+packages = ["sre_gym", "unified_incident_env", "server"]
+include = [
+    "sre_gym/advanced/scenarios/*.yaml",
+    "sre_gym/max/families/*.yaml",
+    "sre_gym/max/chaos/*.yaml",
+    "sre_gym/max/compose/*.yaml",
+]

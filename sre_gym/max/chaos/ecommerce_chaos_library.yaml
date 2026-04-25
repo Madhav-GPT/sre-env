@@ -1,0 +1,160 @@
+# Max-tier chaos library — composable fault patterns for the ecommerce family.
+#
+# Each pattern is a Litmus/Chaos-Mesh-style experiment description: which
+# services to target, what to inject, and what the expected recovery shape is.
+# A scenario instance is built by composing one or more patterns at reset().
+
+version: 1.0
+
+patterns:
+  # -------- Deploy regressions --------
+  deploy_regression:
+    targets: [orders-service, payments-service, worker-orders, api-gateway]
+    inject:
+      type: replace_image
+      bad_image_template: "ghcr.io/sre-gym/{service}:bad-{regression_kind}"
+      regression_kinds:
+        - signature_validation_off_by_one
+        - timeout_removed
+        - retry_loop_no_backoff
+        - error_swallowed
+        - feature_flag_default_inverted
+    canonical_recovery: rollback_deploy(service)
+    grader_focus: blast_radius_minimization
+
+  # -------- Stripe webhook signature regression --------
+  stripe_webhook_signature_regression:
+    targets: [api-gateway, payments-service, stripe-stub]
+    inject:
+      type: code_patch
+      patch: api-gateway-stripe-handler-rewrite.patch
+      effect:
+        - 47% of stripe webhook deliveries fail signature verification
+        - subscription state diverges between Stripe and Postgres
+    canonical_recovery: [rollback_deploy(api-gateway), reconcile_subscriptions(payments-service)]
+    grader_focus: revenue_lost_during_outage
+
+  # -------- Dependency degradation --------
+  dependency_degradation:
+    targets: [redis-sessions, redis-jobs, postgres-replica, kafka-events]
+    inject:
+      type: connection_pool_shrink
+      knobs:
+        max_connections_pct_of_baseline: [25, 50, 75]
+    canonical_recovery: rollback_deploy(target_dependency)
+    grader_focus: cascading_blast_radius
+
+  # -------- Config rollout (Cloudflare Nov 2025 pattern) --------
+  config_rollout:
+    targets: [api-gateway, vercel-edge-fn]
+    inject:
+      type: config_push
+      bad_configs:
+        - cors_origin_allow_all_inverted_to_block_all
+        - rate_limit_dropped_to_one_per_second
+        - logging_level_set_to_silent
+    canonical_recovery: rollback_config(target)
+    grader_focus: time_to_detect
+
+  # -------- Retry storm (Stripe 2022 pattern) --------
+  retry_storm:
+    targets: [worker-payments, worker-orders, worker-fulfilment]
+    inject:
+      type: retry_policy_change
+      bad_policy: fixed_50ms_no_backoff
+    canonical_recovery: [rollback_deploy(worker), drain_queue(redis-jobs)]
+    grader_focus: recovery_under_self_amplifying_load
+
+  # -------- Migration lock contention (Railway Oct 2025 pattern) --------
+  migration_lock:
+    targets: [postgres-primary]
+    inject:
+      type: long_running_migration
+      patterns:
+        - CREATE INDEX without CONCURRENTLY on orders table
+        - ALTER TABLE adding NOT NULL column with backfill
+        - DROP INDEX during peak traffic
+    canonical_recovery: [cancel_migration(postgres-primary), restart_service(postgres-primary)]
+    grader_focus: lock_wait_count_recovery
+
+  # -------- RLS silent cross-tenant leak --------
+  rls_silent_leak:
+    targets: [postgres-primary, orders-service, supabase-auth-stub]
+    inject:
+      type: rls_policy_typo
+      patterns:
+        - USING (tenant_id = auth.uid()) -> USING (TRUE)
+        - USING ((auth.jwt() ->> 'tenant') = tenant_id) -> USING (auth.role() = 'anon')
+    canonical_recovery: [feature_flag_toggle(affected_endpoint, off), rollback_migration(postgres-primary), document_leak_window]
+    grader_focus: containment_first
+    classification: security
+
+  # -------- OAuth supply chain pivot (Vercel Apr 2026 pattern) --------
+  oauth_supply_chain_pivot:
+    targets: [vercel-frontend, posthog-stub, sentry-stub]
+    inject:
+      type: third_party_oauth_token_compromise
+      effect:
+        - third-party analytics tool exfiltrates env vars over compromised OAuth grant
+    canonical_recovery: [revoke_oauth(target), rotate_secrets, mfa_enforce, audit_access_log]
+    grader_focus: blast_radius_containment
+    classification: security
+
+  # -------- Observability self-denial --------
+  observability_self_denial:
+    targets: [sentry-stub, posthog-stub, kafka-events]
+    inject:
+      type: caught_exception_storm
+      effect:
+        - log ingest pipeline saturates
+        - log-shipping library backpressures all upstream services
+    canonical_recovery: [drop_log_sampling, feature_flag_toggle(verbose_logging, off), rollback_deploy(target)]
+    grader_focus: alternate_observability_path_used
+
+  # -------- Secondary rate-limit (Railway Jan 2026 pattern) --------
+  secondary_rate_limit:
+    targets: [worker-orders, stripe-stub]
+    inject:
+      type: aggressive_resync
+      effect:
+        - background workers consume third-party API quota
+        - generic 503s cascade across all dependent endpoints
+    canonical_recovery: [pause_workers, switch_to_cached_tokens, manual_resync_window]
+    grader_focus: external_quota_aware_recovery
+
+  # -------- CDN cache contamination (Railway Mar 2026 pattern) --------
+  cdn_cache_contamination:
+    targets: [vercel-frontend, vercel-edge-fn]
+    inject:
+      type: cache_control_header_loss
+      effect:
+        - authenticated responses cached at edge
+        - cross-tenant data exposure via CDN
+    canonical_recovery: [rollback_cdn_config, global_cache_purge, audit_exposure_window]
+    grader_focus: containment_first
+    classification: security
+
+  # -------- Gossip protocol deadlock (Fly.io Oct 2024 pattern) --------
+  gossip_protocol_deadlock:
+    targets: [api-gateway, orders-service, payments-service, inventory-service]
+    inject:
+      type: gossip_certificate_expiry
+      effect:
+        - inter-service mTLS handshakes fail
+        - cluster gossip fragments
+    canonical_recovery: [bootstrap_new_ca, rolling_cert_replace, restart_in_order]
+    grader_focus: zero_downtime_recovery
+
+# Composability rules — which patterns can be composed into a multi-fault
+# scenario without becoming unsolvable.
+composition_safety:
+  always_safe_pairs:
+    - [stripe_webhook_signature_regression, rls_silent_leak]
+    - [migration_lock, retry_storm]
+    - [observability_self_denial, deploy_regression]
+    - [config_rollout, secondary_rate_limit]
+  unsafe_pairs:
+    # Two simultaneous gossip-protocol deadlocks would render the cluster
+    # genuinely unrecoverable without manual intervention; refuse to compose.
+    - [gossip_protocol_deadlock, gossip_protocol_deadlock]
+  max_simultaneous_patterns: 3

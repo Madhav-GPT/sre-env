@@ -1,0 +1,197 @@
+# Advanced tier reference scenario #1
+#
+# THEME: Multi-stage incident — the agent's first fix introduces a second incident.
+# DIMENSION TESTED: long-horizon state tracking and recovery from early mistakes
+# (Theme #2 of the OpenEnv hackathon brief, verbatim).
+#
+# This scenario is design-only in this repo. It is shipped as a YAML spec so a
+# downstream user with horizon-tier compute (~1 A100 day) can implement the
+# simulator backing it. The reference trace at the bottom of this file shows
+# what a successful 80-step trajectory looks like.
+
+id: cascading_release_train
+tier: advanced
+difficulty: hard
+name: Cascading Release Train
+description: >-
+  At 14:02 UTC a release train deploys gateway, worker, and migration-runner
+  together. Gateway's new code expects users.plan_tier; the migration ran
+  successfully but worker continues to bump its pinned schema version
+  asynchronously, so for the next ~25 minutes worker writes are stamped
+  with the old schema version. Agent rolls back gateway. Five minutes later,
+  worker's drift sync triggers a chain of failed retries — now the worker
+  is the loudest service. Agent must recognize that the second incident is
+  caused by the first fix, NOT a fresh issue, and execute a SECOND rollback
+  on worker before declaring resolved.
+
+# 18-service production-shaped topology. Each service has explicit owner,
+# pager rotation, and SLO.
+topology:
+  services:
+    - {id: vercel-edge,        kind: edge,       owner: platform,  slo_p95_ms: 80}
+    - {id: api-gateway,        kind: bff,        owner: platform,  slo_p95_ms: 250}
+    - {id: auth-service,       kind: backend,    owner: identity,  slo_p95_ms: 120}
+    - {id: orders-service,     kind: backend,    owner: orders,    slo_p95_ms: 280}
+    - {id: payments-service,   kind: backend,    owner: payments,  slo_p95_ms: 450}
+    - {id: shipping-service,   kind: backend,    owner: orders,    slo_p95_ms: 320}
+    - {id: notifications,      kind: backend,    owner: growth,    slo_p95_ms: 180}
+    - {id: search-service,     kind: backend,    owner: discovery, slo_p95_ms: 120}
+    - {id: worker-orders,      kind: worker,     owner: orders,    slo_p95_ms: 0}
+    - {id: worker-payments,    kind: worker,     owner: payments,  slo_p95_ms: 0}
+    - {id: worker-search,      kind: worker,     owner: discovery, slo_p95_ms: 0}
+    - {id: postgres-primary,   kind: database,   owner: platform,  slo_p95_ms: 30}
+    - {id: postgres-replica,   kind: database,   owner: platform,  slo_p95_ms: 35}
+    - {id: redis-sessions,     kind: cache,      owner: identity,  slo_p95_ms: 8}
+    - {id: redis-jobs,         kind: cache,      owner: orders,    slo_p95_ms: 8}
+    - {id: kafka-events,       kind: queue,      owner: platform,  slo_p95_ms: 50}
+    - {id: stripe-webhook,     kind: external,   owner: payments,  slo_p95_ms: 600}
+    - {id: supabase-auth,      kind: external,   owner: identity,  slo_p95_ms: 240}
+
+incident_chain:
+  - phase: 1
+    starts_at_tick: 0
+    triggered_by: release_train
+    failing_services: [api-gateway, orders-service, search-service]
+    correct_action: rollback_deploy(api-gateway)
+    deceptive_signal: |
+      auth-service shows elevated 500s (downstream of the gateway change but
+      LOOKS like an auth-service fault).
+  - phase: 2
+    starts_at_tick: 25  # ~5 simulated minutes after phase-1 fix
+    triggered_by: phase_1_remediation
+    failing_services: [worker-orders, redis-jobs, postgres-primary]
+    correct_action: rollback_deploy(worker-orders)
+    deceptive_signal: |
+      Looks like a database lock contention or redis pool exhaustion; agent
+      who treats this as a fresh incident will start querying postgres metrics
+      and miss that the rollback timestamp matches the worker's drift-sync
+      retry cadence.
+
+# 28 actions vs 11 in Basic. The agent learns when to use traces, when to read
+# PRs, when to escalate.
+allowed_actions:
+  # Same as Basic
+  - query_logs
+  - query_metrics
+  - query_dependencies
+  - query_deploys
+  - rollback_deploy
+  - restart_service
+  - run_check
+  - isolate_service
+  - escalate
+  - submit_hypothesis
+  - declare_resolved
+  # Advanced-only
+  - query_traces                  # distributed-trace lookup across services
+  - query_recent_prs              # GitHub PRs merged in the last N hours
+  - read_diff                     # full diff of a specific deploy
+  - feature_flag_toggle           # turn off a specific feature flag
+  - query_external_dep_status     # hit Stripe/Supabase/etc. status pages
+  - create_incident_doc           # spin up an incident-management page
+  - assign_oncall                 # page a different team's on-call rotation
+  - request_human_approval        # gate destructive changes behind a peer
+  - drain_queue                   # kafka consumer group offset reset
+  - slow_rollout                  # canary rollback with %-based traffic split
+  - bisect_deploys                # binary-search a deploy range for the bad commit
+  - query_slo_burn                # multi-window SLO burn-rate query
+  - tag_release_dirty             # mark a release as poisoned in the deploy registry
+  - post_status_update            # update the customer-facing status page
+  - request_acknowledgement       # confirm an oncall peer saw your message
+  - propose_postmortem            # draft a structured postmortem
+  - mark_resolution_partial       # explicit escalation path for partial fixes
+
+# Reward dimensions are hardened with two new signals beyond Basic:
+# - blast_radius_increase_penalty: any action that broadens impact is penalized
+# - chained_incident_recognition_bonus: if the agent correctly identifies that
+#   incident #2 is downstream of fix #1, they get a bonus
+reward_dimensions:
+  recovery_score:                  {weight: 0.20, range: [0, 0.20]}
+  containment_score:               {weight: 0.10, range: [0, 0.10]}
+  verification_score:              {weight: 0.15, range: [0, 0.15]}
+  impact_score:                    {weight: 0.05, range: [0, 0.05]}
+  efficiency_score:                {weight: 0.05, range: [0, 0.05]}
+  speed_bonus:                     {weight: 0.10, range: [0, 0.10]}
+  noise_handling_score:            {weight: 0.05, range: [0, 0.05]}
+  blast_radius_increase_penalty:   {weight: -0.10, range: [-0.10, 0]}
+  chained_incident_recognition:    {weight: 0.10, range: [0, 0.10]}
+  postmortem_quality:              {weight: 0.10, range: [0, 0.10]}
+
+reference_trajectory_length: 80
+optimal_ticks: 65
+max_ticks: 90
+
+# A reference trace showing the optimal path. Useful for SFT seed data.
+reference_trace:
+  phase_1:
+    - {tick:  1, action: query_metrics(api-gateway, error_rate),       expected_signal: error_rate spiked at 14:02 UTC}
+    - tick: 2
+      action: 'query_deploys(api-gateway)'
+      expected_signal: 'gateway, worker, migration-runner all rolled out at 14:02'
+    - tick: 3
+      action: 'query_recent_prs(api-gateway)'
+      expected_signal: 'PR #4421 references plan_tier column'
+    - tick: 4
+      action: 'query_logs(orders-service)'
+      expected_signal: 'PrismaClientKnownRequestError column does not exist'
+    - {tick:  5, action: read_diff(api-gateway, 2026.04.25-release-train), expected_signal: schema-expecting code shipped}
+    - tick: 6
+      action: 'query_logs(postgres-primary)'
+      expected_signal: 'migration applied successfully'
+    - tick: 7
+      action: 'submit_hypothesis(schema_migration_mismatch)'
+      expected_signal: 'scoring'
+    - tick: 8
+      action: 'rollback_deploy(api-gateway)'
+      expected_signal: 'cause_removed = true for phase 1'
+    - tick: 9
+      action: 'run_check(end_to_end)'
+      expected_signal: 'phase 1 checks green'
+    - tick: 10
+      action: 'post_status_update("Phase 1 mitigated")'
+      expected_signal: 'status posted'
+  phase_2:
+    - {tick: 25, action: query_metrics(worker-orders, error_rate),     expected_signal: error rate spiking now}
+    - tick: 26
+      action: 'query_traces(worker-orders)'
+      expected_signal: 'trace shows postgres-write-then-retry loop'
+    - tick: 27
+      action: 'query_deploys(worker-orders)'
+      expected_signal: 'same release-train timestamp as gateway'
+    - {tick: 28, action: read_diff(worker-orders, 2026.04.25-release-train), expected_signal: worker bumped pinned schema version asynchronously}
+    - tick: 29
+      action: 'submit_hypothesis(chained_incident_from_phase_1)'
+      expected_signal: 'chained_incident_recognition bonus'
+    - tick: 30
+      action: 'rollback_deploy(worker-orders)'
+      expected_signal: 'cause_removed = true for phase 2'
+    - tick: 31
+      action: 'drain_queue(redis-jobs)'
+      expected_signal: 'backlog drains'
+    - tick: 32
+      action: 'run_check(end_to_end)'
+      expected_signal: 'full topology green'
+    - tick: 33
+      action: 'propose_postmortem'
+      expected_signal: 'postmortem_quality bonus'
+    - tick: 34
+      action: 'declare_resolved'
+      expected_signal: 'terminal'
+# Synthetic on-call peer behaviour. The agent can call escalate() and the peer
+# will respond. The peer is helpful but sometimes wrong — the agent has to
+# learn when to trust them.
+oncall_peer:
+  enabled: true
+  behaviours:
+    - {trigger: "escalate during phase 1", response: "Looks like a Prisma migration drift. Did the migration run?", correct_pct: 80}
+    - {trigger: "escalate during phase 2", response: "Maybe try restarting the worker? It's been wedged for a few minutes.", correct_pct: 30, decoy: true}
+    - {trigger: "request_acknowledgement after status update", response: "Got it, watching dashboards.", correct_pct: 100}
+
+# Acceptance criteria for a passing trajectory.
+success_criteria:
+  - phase_1_root_cause_correctly_identified: true
+  - phase_2_recognized_as_chained: true
+  - both_rollbacks_applied: true
+  - no_blast_radius_increases: true
+  - postmortem_drafted: true
+  - end_to_end_check_passes_terminally: true

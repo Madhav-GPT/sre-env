@@ -15,3 +15,17 @@ uv.lock
 .env
 .env.*
 secrets/
+
+# claude-code transient state
+.claude/
+
+# notebook checkpoints + ipynb lock files
+.ipynb_checkpoints/
+*.nbconvert.ipynb
+
+# eval / training artifacts that shouldn't live in git
+eval/results/*.csv
+eval/results/*.png
+eval/results/*.jsonl
+!eval/results/.gitkeep
+!eval/results/README.md

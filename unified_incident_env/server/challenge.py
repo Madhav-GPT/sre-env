@@ -1,4 +1,15 @@
-"""Scenario catalog, baselines, and runtime helpers for the honest v2 core."""
+"""Scenario catalog, baselines, and runtime helpers for the honest v2 core.
+
+The catalogue ships 12 base templates: the original 6 (kept verbatim — they're
+well-calibrated and shipped behavioural data) plus 6 round-2 templates added for
+the April 2026 OpenEnv hackathon submission. See ``basic_templates_extra.py`` for
+the new templates and ``docs/BASIC_TIER.md`` for the depth-not-quantity rationale.
+
+Procedural generation expands each base into 5 variants (jittered metrics, deploy
+timestamps, distractor noise rotation), giving 12 x 6 = 72 deterministic-but-
+distinct scenarios at runtime. Holding out 12 (one per template) yields a clean
+60-train / 12-eval split.
+"""
 
 from __future__ import annotations
 
@@ -16,9 +27,10 @@ from ..models import (
     ScenarioSummary,
     UnifiedIncidentAction,
 )
+from .basic_templates_extra import EXTRA_TEMPLATES, extra_baselines
 
 DEFAULT_SCENARIO_ID = "worker_deploy_cascade"
-PROCGEN_VARIANTS_PER_TEMPLATE = 4
+PROCGEN_VARIANTS_PER_TEMPLATE = 5
 _MINUTES_AGO_RE = re.compile(r"(\d+)\s+minutes ago")
 _ROLLOUT_VERSION_RE = re.compile(r"(@\d{4}\.\d{2}\.\d{2}-)([a-z0-9-]+)")
 
@@ -1171,8 +1183,13 @@ def _materialize_procgen_variant(template_id: str, template: dict[str, Any], *, 
 
 
 def _build_scenarios() -> dict[str, dict[str, Any]]:
+    # Merge round-2 Basic templates into the canonical base catalogue. We do
+    # this inside _build_scenarios (rather than at module import time) so that
+    # any future tier-aware filter can short-circuit easily without mutating
+    # module state.
+    base = {**_BASE_SCENARIOS, **EXTRA_TEMPLATES}
     catalog: dict[str, dict[str, Any]] = {}
-    for template_id, scenario in _BASE_SCENARIOS.items():
+    for template_id, scenario in base.items():
         catalog[template_id] = deepcopy(scenario)
         catalog[template_id]["template_id"] = template_id
         catalog[template_id]["is_procgen"] = False
@@ -1536,6 +1553,8 @@ _BASELINE_BUILDERS = {
     "payment_webhook_misconfig": _payment_webhook_misconfig_baseline,
     "schema_drift_missing_migration": _schema_drift_baseline,
     "cache_stale_state": _cache_stale_state_baseline,
+    # Round-2 Basic-tier templates (see basic_templates_extra.py).
+    **extra_baselines(),
 }
 
 

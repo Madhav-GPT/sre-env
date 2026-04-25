@@ -311,19 +311,28 @@ def test_cache_stale_state_requires_cache_rollback() -> None:
     assert obs.failure_type == "wrong_remediation_target"
 
 
-def test_catalog_has_six_scenario_templates() -> None:
+def test_catalog_has_twelve_scenario_templates() -> None:
     templates = {
         scenario_id
         for scenario_id, scenario in SCENARIOS.items()
         if not scenario.get("is_procgen")
     }
     assert templates == {
+        # v2 templates (kept verbatim)
         "worker_deploy_cascade",
         "db_config_rollout",
         "gateway_auth_rollout",
         "payment_webhook_misconfig",
         "schema_drift_missing_migration",
         "cache_stale_state",
+        # round-2 templates (added for OpenEnv April 2026 submission;
+        # see docs/BASIC_TIER.md for the per-template skill mapping)
+        "dep_degradation",
+        "memory_leak_oom",
+        "auth_token_expiry",
+        "network_partition",
+        "rate_limit_retry_storm",
+        "migration_lock",
     }
 
 

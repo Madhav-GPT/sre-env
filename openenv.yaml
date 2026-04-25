@@ -1,27 +1,53 @@
 name: sre-engineer-llm
-version: 2.0.0
+version: 3.0.0
 description: >
-  Honest narrow OpenEnv benchmark for incident diagnosis and safe remediation.
-  Agents query evidence, choose bounded remediation actions, run explicit checks,
-  and declare resolution only after objective recovery succeeds.
+  Tier-escalating SRE training environment for vibe-coded SaaS. Three tiers
+  escalate three different dimensions: Basic (compute), Advanced (horizon),
+  Max (realism). The Basic tier — runnable here on the HF Space — ships 12
+  templates x 5 procgen variants = 72 deterministic scenarios for incident
+  diagnosis and safe remediation against a 4-service topology, with a hardened
+  scripted-optimal ceiling of <=0.80 leaving headroom for trained agents.
+  Advanced and Max tiers are documented as design space (3 reference
+  scenarios + 1 fully-specced family with docker-compose + chaos library).
 author: Daksh Verma
-license: MIT
+license: Apache-2.0
 
 environment:
   action_type: UnifiedIncidentAction
   observation_type: UnifiedIncidentObservation
   state_type: UnifiedIncidentState
-  max_steps: 12
+  max_steps: 13
   difficulties: [easy, medium, hard]
   reward_type: dense
   # GRPO/TRL training contract: parallel env instances per training step.
   # Required for the OpenEnv batched-rollout pattern documented at
   # https://huggingface.co/docs/trl/openenv.
   max_concurrent_envs: 64
-  scenario_count: 30
-  scenario_templates: 6
+  scenario_count: 72
+  scenario_templates: 12
   procgen_variants_per_template: 5
   deterministic_seeded: true
+  tier: basic                          # the runnable surface served by this Space
+  tier_escalation_dimension: compute   # see docs/ARCHITECTURE.md for full design
+
+tiers:
+  basic:
+    runnable: true
+    escalation_dimension: compute
+    persona: "ML student / Kaggle, $30 of HF credits"
+    scenario_count: 72
+  advanced:
+    runnable: false
+    escalation_dimension: horizon
+    persona: "seed/Series A startup, $300-500 budget"
+    scenario_count: 3
+    docs: docs/ADVANCED_TIER.md
+  max:
+    runnable: false
+    escalation_dimension: realism
+    persona: "enterprise SRE platform, 8x A100/H100"
+    scenario_count: 1
+    docs: docs/MAX_TIER.md
 
 huggingface:
   space_id: dakshdoesdev/sre-gym

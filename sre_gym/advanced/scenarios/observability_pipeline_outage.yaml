@@ -1,0 +1,165 @@
+# Advanced tier reference scenario #2
+#
+# THEME: Partial observability — the logging pipeline itself is the failing
+# service, so query_logs returns degraded data and the agent must rely on
+# traces, metrics, and dependency status to localize the fault.
+# DIMENSION TESTED: causal reasoning + observability self-defense (the
+# observability paradox surfaced in the Cloudflare 2025-2026 logging-storm
+# postmortems).
+
+id: observability_pipeline_outage
+tier: advanced
+difficulty: hard
+name: Observability Pipeline Self-Denial
+description: >-
+  An application begins throwing millions of caught exceptions. The logging
+  pipeline is configured to ship full stack traces synchronously to a central
+  Loki cluster. Loki saturates, then Promtail backpressures, then the
+  application's logging library starts blocking on flush, then *every*
+  service that uses the same logging library gets slow. The agent's
+  query_logs action returns degraded, partial, or stale data because the
+  ingest pipeline is the affected dependency. The optimal recovery requires
+  temporarily disabling debug logging to free CPU headroom, then deploying a
+  fix to the underlying caught-exception bug.
+
+topology:
+  services:
+    - {id: vercel-edge,        kind: edge,       owner: platform}
+    - {id: api-gateway,        kind: bff,        owner: platform}
+    - {id: feed-service,       kind: backend,    owner: feed,      anomaly_origin: true}
+    - {id: search-service,     kind: backend,    owner: discovery}
+    - {id: notifications,      kind: backend,    owner: growth}
+    - {id: postgres-primary,   kind: database,   owner: platform}
+    - {id: redis-sessions,     kind: cache,      owner: identity}
+    - {id: kafka-events,       kind: queue,      owner: platform}
+    - {id: loki,               kind: observability, owner: platform, anomaly_propagator: true}
+    - {id: promtail,           kind: observability, owner: platform, anomaly_propagator: true}
+    - {id: grafana,            kind: observability, owner: platform}
+    - {id: tempo,              kind: observability, owner: platform}
+    - {id: prometheus,         kind: observability, owner: platform}
+    - {id: alertmanager,       kind: observability, owner: platform}
+    - {id: stripe-webhook,     kind: external,   owner: payments}
+    - {id: supabase-auth,      kind: external,   owner: identity}
+
+incident_chain:
+  - phase: 1
+    starts_at_tick: 0
+    triggered_by: feed_service_caught_exception_storm
+    failing_services: [feed-service, loki, promtail]
+    correct_action: feature_flag_toggle(verbose_logging, off)
+    deceptive_signal: |
+      query_logs(feed-service) returns "log delivery delayed; data older than
+      4 minutes". The agent might assume feed-service is unreachable. Trace
+      data is still available because tempo is on a different ingest path.
+  - phase: 2
+    starts_at_tick: 30
+    triggered_by: phase_1_mitigation_freed_cpu
+    failing_services: [feed-service]
+    correct_action: rollback_deploy(feed-service)
+    deceptive_signal: |
+      With logs flowing again, the underlying caught-exception bug is now
+      visible. Agent must NOT mistake "logs caught up" for "incident resolved"
+      — the original code change still needs to be reverted.
+
+allowed_actions:
+  # All Basic actions plus Advanced extensions
+  - query_logs                    # returns degraded data during phase 1
+  - query_metrics
+  - query_traces                  # CRITICAL: this is the alternate observability path
+  - query_dependencies
+  - query_deploys
+  - query_recent_prs
+  - query_external_dep_status
+  - rollback_deploy
+  - restart_service
+  - run_check
+  - isolate_service
+  - feature_flag_toggle           # CRITICAL: turns off verbose_logging
+  - escalate
+  - submit_hypothesis
+  - declare_resolved
+  - mark_resolution_partial
+  - propose_postmortem
+  - read_diff
+  - request_human_approval
+  - drain_queue
+  - drop_log_sampling             # observability-tier only: 100% -> 1% sampling
+  - cordon_loki                   # stop accepting new logs to give the pipeline a breather
+  - escalate_to_observability_oncall
+
+reward_dimensions:
+  recovery_score:                  {weight: 0.20, range: [0, 0.20]}
+  containment_score:               {weight: 0.10, range: [0, 0.10]}
+  verification_score:              {weight: 0.15, range: [0, 0.15]}
+  impact_score:                    {weight: 0.05, range: [0, 0.05]}
+  efficiency_score:                {weight: 0.05, range: [0, 0.05]}
+  speed_bonus:                     {weight: 0.10, range: [0, 0.10]}
+  alternate_observability_use:     {weight: 0.10, range: [0, 0.10]}    # used traces when logs lied
+  pipeline_protection:             {weight: 0.10, range: [0, 0.10]}    # disabled verbose logs before further damage
+  postmortem_quality:              {weight: 0.10, range: [0, 0.10]}
+  blast_radius_increase_penalty:   {weight: -0.05, range: [-0.05, 0]}
+
+reference_trajectory_length: 70
+optimal_ticks: 55
+max_ticks: 80
+
+reference_trace:
+  phase_1_observability_self_defense:
+    - {tick:  1, action: query_metrics(loki, ingest_rate),    expected_signal: ingest backlog at 8M lines}
+    - tick: 2
+      action: 'query_logs(feed-service)'
+      expected_signal: '"log delivery delayed; data older than 4m"'
+    - tick: 3
+      action: 'query_traces(feed-service)'
+      expected_signal: 'caught-exception trace ID 7f...'
+    - {tick:  4, action: query_metrics(prometheus, scrape_lag), expected_signal: prometheus is fine, only loki is saturated}
+    - tick: 5
+      action: 'query_dependencies(feed-service)'
+      expected_signal: 'feed-service shares promtail sidecar with notifications, search'
+    - tick: 6
+      action: 'drop_log_sampling(verbose)'
+      expected_signal: 'ingest_rate falling'
+    - {tick:  7, action: feature_flag_toggle(verbose_logging, off), expected_signal: pipeline_protection bonus + ingest stabilising}
+    - tick: 8
+      action: 'run_check(end_to_end)'
+      expected_signal: 'partial — symptom mitigated, root cause remains'
+    - tick: 9
+      action: 'mark_resolution_partial'
+      expected_signal: 'status updated'
+  phase_2_root_cause_fix:
+    - tick: 30
+      action: 'query_logs(feed-service)'
+      expected_signal: 'now flowing — Sentry trace pinpoints try/except wrapping a hot loop'
+    - tick: 31
+      action: 'query_recent_prs(feed-service)'
+      expected_signal: 'PR #4502 added a try/except inside ranking loop'
+    - {tick: 32, action: read_diff(feed-service, 2026.04.25-ranking-tweak), expected_signal: confirms root cause}
+    - tick: 33
+      action: 'submit_hypothesis(observability_amplification)'
+      expected_signal: 'scoring'
+    - tick: 34
+      action: 'rollback_deploy(feed-service)'
+      expected_signal: 'caught-exception storm ends'
+    - {tick: 35, action: feature_flag_toggle(verbose_logging, on), expected_signal: restore observability}
+    - tick: 36
+      action: 'run_check(end_to_end)'
+      expected_signal: 'full green'
+    - tick: 37
+      action: 'propose_postmortem'
+      expected_signal: 'postmortem_quality bonus'
+    - tick: 38
+      action: 'declare_resolved'
+      expected_signal: 'terminal'
+oncall_peer:
+  enabled: true
+  behaviours:
+    - {trigger: "escalate when phase 1", response: "Loki's saturated again. Drop sampling to 1% and we can think.", correct_pct: 95}
+    - {trigger: "escalate when phase 2", response: "Now we can see — looks like a try/except in feed-service ranking loop.", correct_pct: 70}
+
+success_criteria:
+  - alternate_observability_path_used: true
+  - verbose_logging_disabled_before_root_cause_fix: true
+  - root_cause_deploy_rolled_back: true
+  - verbose_logging_restored_after_fix: true
+  - postmortem_drafted: true
+  - end_to_end_check_passes_terminally: true

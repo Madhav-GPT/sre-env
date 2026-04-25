@@ -1,0 +1,23 @@
+{
+    "tier": "basic",
+    "split": "holdout",
+    "rationale": "One procgen variant per template (always the __p05 slice) is held out from training. Procgen is deterministically seeded so this list is stable across runs. See docs/BASIC_TIER.md §2 for the seeded-RNG details.",
+    "split_size": 12,
+    "templates_covered": 12,
+    "scenario_ids": [
+        "auth_token_expiry__p05",
+        "cache_stale_state__p05",
+        "db_config_rollout__p05",
+        "dep_degradation__p05",
+        "gateway_auth_rollout__p05",
+        "memory_leak_oom__p05",
+        "migration_lock__p05",
+        "network_partition__p05",
+        "payment_webhook_misconfig__p05",
+        "rate_limit_retry_storm__p05",
+        "schema_drift_missing_migration__p05",
+        "worker_deploy_cascade__p05"
+    ],
+    "training_split_size": 60,
+    "training_split_pattern": "all scenarios except *__p05 — so 12 base templates + 4 procgen variants (__p01..__p04) per template = 60 train scenarios"
+}

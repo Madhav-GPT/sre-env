@@ -60,6 +60,15 @@ RootCauseType = Literal[
     "payment_webhook_regression",
     "schema_migration_mismatch",
     "cache_ttl_regression",
+    # Round-2 Basic templates. Each maps to a distinct SRE skill the agent
+    # has to learn — see docs/BASIC_TIER.md for the depth-not-quantity
+    # rationale and incident-corpus grounding.
+    "dependency_pool_exhausted",
+    "memory_leak_runaway",
+    "credential_rotation_breakage",
+    "network_dns_partition",
+    "external_rate_limit_storm",
+    "migration_lock_contention",
 ]
 RecommendedActionType = Literal[
     "query_logs",
