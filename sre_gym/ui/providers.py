@@ -1,13 +1,13 @@
-"""Provider abstractions for BYOK chat-completion routing.
+"""Provider abstractions for chat-completion routing.
 
 Every provider implements an async ``chat(messages, **kwargs)`` method
 returning the assistant text. Errors raise typed exceptions from
 ``sre_gym.exceptions`` so the UI can surface a redacted message rather than
 echoing the failing key.
 
-Four implementations (UI Build Addendum §3.4):
+Four implementations:
 
-- ``HFInferenceProvider``     — huggingface_hub.AsyncInferenceClient
+- ``HFInferenceProvider``     — Hugging Face Inference Router via OpenAI SDK
 - ``AnthropicProvider``       — anthropic.AsyncAnthropic
 - ``OpenAICompatibleProvider``— openai.AsyncOpenAI (covers OpenAI / Together /
                                 Fireworks / Groq / DeepSeek)
@@ -51,19 +51,21 @@ class Provider(Protocol):
 
 
 # ---------------------------------------------------------------------------
-# Hugging Face Inference Client.
+# Hugging Face Inference Router.
 # ---------------------------------------------------------------------------
 
 
 class HFInferenceProvider:
-    """Routes chat completions through huggingface_hub.InferenceClient.
+    """Routes chat completions through the HF Inference Router.
 
-    Works with any HF-hosted model that supports the chat-completion task,
-    including the Inference Router (which fans out to providers like Together,
-    Fireworks, Novita, Replicate based on model availability).
+    The router exposes an OpenAI-compatible chat-completions surface at
+    ``https://router.huggingface.co/v1``. This matches the repo's
+    ``inference.py`` path and keeps the UI on the same credential + request
+    shape for every tier.
     """
 
     name = "hf"
+    base_url = "https://router.huggingface.co/v1"
 
     def __init__(self, hf_token: str, model: str) -> None:
         if not hf_token:
@@ -76,16 +78,17 @@ class HFInferenceProvider:
         if self._client is not None:
             return self._client
         try:
-            from huggingface_hub import InferenceClient
+            from openai import OpenAI
         except ImportError as exc:  # pragma: no cover - environment-specific
-            raise ProviderModelError(self.name, f"huggingface_hub not installed: {exc}") from exc
-        self._client = InferenceClient(model=self.model, token=self._token)
+            raise ProviderModelError(self.name, f"openai SDK not installed: {exc}") from exc
+        self._client = OpenAI(base_url=self.base_url, api_key=self._token)
         return self._client
 
     def chat_sync(self, messages: list[dict[str, str]], **kwargs: Any) -> str:
         client = self._ensure_client()
         try:
-            resp = client.chat_completion(
+            resp = client.chat.completions.create(
+                model=self.model,
                 messages=messages,
                 max_tokens=kwargs.get("max_tokens", 256),
                 temperature=kwargs.get("temperature", 0.0),

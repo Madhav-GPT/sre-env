@@ -134,9 +134,15 @@ def _extract_json_object(text: str) -> dict[str, Any]:
     if end < 0:
         raise ActionParseError(text, "unterminated JSON object")
     try:
-        return json.loads(text[: end + 1])
+        obj = json.loads(text[: end + 1])
     except json.JSONDecodeError as exc:
         raise ActionParseError(text, f"invalid JSON: {exc.msg}") from exc
+    if isinstance(obj, dict) and "action_type" not in obj and isinstance(obj.get("action"), str):
+        obj = {**obj, "action_type": obj["action"]}
+        obj.pop("action", None)
+    if not isinstance(obj, dict):
+        raise ActionParseError(text, "top-level JSON must be an object")
+    return obj
 
 
 def make_policy(

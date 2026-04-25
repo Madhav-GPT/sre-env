@@ -147,6 +147,12 @@ def test_extract_json_object_handles_prose_around_json() -> None:
     assert obj == {"action_type": "escalate"}
 
 
+def test_extract_json_object_normalizes_action_alias() -> None:
+    text = '{"action": "query_logs", "service": "worker"}'
+    obj = _extract_json_object(text)
+    assert obj == {"action_type": "query_logs", "service": "worker"}
+
+
 def test_extract_json_object_raises_on_unterminated() -> None:
     with pytest.raises(ActionParseError):
         _extract_json_object('{"action_type": "query_logs"')
