@@ -69,7 +69,7 @@ assert (REPO_ROOT / "sre_gym").exists(), "Wrong directory — sre_gym/ not found
 # CUDA-version-pinned and the Space's torch may differ from the lockfile's.
 subprocess.check_call([sys.executable, "-m", "pip", "install", "-q", "-e", ".[dev,train]"])
 subprocess.check_call([sys.executable, "-m", "pip", "install", "-q",
-                        "unsloth", "trl>=0.11", "vllm", "datasets", "accelerate",
+                        "unsloth", "trl>=1.0,<2.0", "vllm", "datasets", "accelerate",
                         "matplotlib", "pandas"])
 
 # Make the repo importable for in-process env stepping later.
@@ -281,13 +281,13 @@ sft_args = SFTConfig(
     optim="adamw_8bit",
     weight_decay=0.01,
     report_to="none",
-    max_seq_length=MAX_SEQ_LEN,
+    max_length=MAX_SEQ_LEN,        # TRL >=1.0 renamed max_seq_length -> max_length
     packing=False,
     dataset_text_field="text",
 )
 sft_trainer = SFTTrainer(
     model=model,
-    tokenizer=tokenizer,
+    processing_class=tokenizer,    # TRL >=1.0 renamed tokenizer -> processing_class
     train_dataset=train_ds,
     eval_dataset=eval_ds,
     args=sft_args,
@@ -457,10 +457,10 @@ grpo_args = GRPOConfig(
     per_device_train_batch_size=1,
     gradient_accumulation_steps=8,
     num_train_epochs=1,
-    max_prompt_length=2048,
     max_completion_length=256,
     use_vllm=True,
     vllm_gpu_memory_utilization=0.5,
+    vllm_max_model_length=4096,    # TRL >=1.0 dropped max_prompt_length; bound total via vllm
     beta=0.04,
     temperature=0.7,
     logging_steps=5,
@@ -476,7 +476,7 @@ grpo_trainer = GRPOTrainer(
     args=grpo_args,
     reward_funcs=[reward_fn],
     train_dataset=grpo_prompts_ds,
-    tokenizer=tokenizer,
+    processing_class=tokenizer,    # TRL >=1.0 renamed tokenizer -> processing_class
 )
 print("\nStarting GRPO online training ...")
 grpo_trainer.train()
