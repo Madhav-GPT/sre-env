@@ -207,21 +207,25 @@ def test_blast_radius_increments_on_mitigations() -> None:
     assert obs2.blast_radius == 2
 
 
-def test_baseline_ceiling_is_hardened_below_080() -> None:
-    """Scripted-optimal baseline must land in the [0.70, 0.80] band across
-    every Basic template — round-2 templates included.
+def test_heuristic_ceiling_is_in_band() -> None:
+    """A naive heuristic — gather evidence + correct hypothesis, never
+    remediate — should land in the [0.65, 0.80] band on every template.
 
-    Why [0.70, 0.80] specifically:
-    - 0.80 hard cap: leaves 0.20 of headroom for a trained agent that beats
-      ``optimal_ticks`` *and* avoids every noise query — the training target.
-    - 0.70 floor: confirms the scripted baseline actually solves cleanly. Any
-      template scoring below 0.70 has a calibration bug (optimal_ticks too
-      generous, post-rollback states not healthy enough, etc.) and must be
-      fixed before shipping.
+    Why [0.65, 0.80] specifically (see docs/REWARD_DESIGN.md §4):
+    - 0.80 hard cap: under the 5-component rubric, an agent that earns
+      half-credit on outcome (correct hypothesis, no successful remediation)
+      cannot reach 0.80 without resolving. That margin is the training
+      target — trained agents only beat the heuristic by actually fixing
+      the incident.
+    - 0.65 floor: the heuristic still earns full credit on action_validity,
+      format, anticheat, and partial efficiency. Below 0.65 means a
+      regression in those dimensions — calibration bug or misconfigured
+      template.
 
-    See docs/REWARD_DESIGN.md §4 for the full rationale.
+    Note: the *scripted-optimal* baseline used elsewhere demonstrates a
+    full clean solve and scores ~0.94 — that's the expert reference, not
+    the heuristic ceiling.
     """
-    # All 12 templates — v2 + round-2 share the same ceiling band.
     template_ids = (
         # v2 templates
         "worker_deploy_cascade",
@@ -239,30 +243,68 @@ def test_baseline_ceiling_is_hardened_below_080() -> None:
         "migration_lock",
     )
     for scenario_id in template_ids:
-        obs = _run_baseline_for_scenario(scenario_id)
-        assert obs is not None
-        assert 0.70 <= obs.final_score <= 0.80, (
-            f"{scenario_id} ceiling {obs.final_score:.3f} is outside the [0.70, 0.80] band "
-            f"— see docs/REWARD_DESIGN.md §4. The trained-agent headroom is gone."
+        env = UnifiedIncidentEnvironment()
+        env.reset(scenario_id=scenario_id)
+        scenario = env._episode["scenario"]
+        truth = scenario["truth"]
+        # Naive heuristic: a couple of queries + correct hypothesis. No
+        # remediation, no resolution declaration.
+        env.step(UnifiedIncidentAction(action_type="query_logs", service="worker"))
+        env.step(UnifiedIncidentAction(action_type="query_deploys", service="worker"))
+        obs = env.step(
+            UnifiedIncidentAction(
+                action_type="submit_hypothesis",
+                hypothesis=HypothesisPayload(
+                    root_cause=truth["root_cause"],
+                    affected_services=list(truth["affected_services"])[:1] or ["worker"],
+                    confidence=0.8,
+                    recommended_next_action=truth["best_next_action"],
+                ),
+            )
+        )
+        score = obs.final_score
+        assert 0.65 <= score <= 0.80, (
+            f"{scenario_id} heuristic ceiling {score:.3f} is outside the [0.65, 0.80] band "
+            f"— see docs/REWARD_DESIGN.md §4."
         )
 
 
-def test_speed_bonus_rewards_finishing_under_optimal_ticks() -> None:
-    """A faster solve that keeps both verification checks should beat the
-    baseline ceiling by the speed_bonus margin. This is the training target
-    — trained agents that skip verification to chase speed should score
-    *lower*, not higher."""
+def test_fast_solve_beats_scripted_baseline() -> None:
+    """A faster correct solve — submit hypothesis, rollback, verify, resolve —
+    should score above the scripted-optimal baseline. The efficiency
+    dimension rewards finishing under ``optimal_ticks`` and a trained agent
+    that skips ``submit_hypothesis`` would lose the format dimension instead
+    of trading off."""
     env = UnifiedIncidentEnvironment()
     env.reset(scenario_id="gateway_auth_rollout")
-    # 5-step path: 1 query + 1 rollback + 2 checks + 1 declare. Baseline does 8.
+    scenario = env._episode["scenario"]
+    truth = scenario["truth"]
+    # 6-step path: 1 query + 1 hypothesis + 1 rollback + 2 checks + 1 declare.
     env.step(UnifiedIncidentAction(action_type="query_deploys", service="api-gateway"))
+    env.step(
+        UnifiedIncidentAction(
+            action_type="submit_hypothesis",
+            hypothesis=HypothesisPayload(
+                root_cause=truth["root_cause"],
+                affected_services=list(truth["affected_services"])[:1],
+                confidence=0.8,
+                recommended_next_action=truth["best_next_action"],
+            ),
+        )
+    )
     env.step(UnifiedIncidentAction(action_type="rollback_deploy", service="api-gateway"))
     env.step(UnifiedIncidentAction(action_type="run_check", check_name="end_to_end"))
     env.step(UnifiedIncidentAction(action_type="run_check", check_name="database_recovery"))
     obs = env.step(UnifiedIncidentAction(action_type="declare_resolved"))
     assert obs.incident_resolved is True
-    assert obs.score_breakdown.get("speed_bonus", 0) > 0.0
-    assert obs.final_score > 0.74, f"Faster solve with full verification should beat baseline, got {obs.final_score}"
+    assert obs.score_breakdown["outcome"] == 1.0
+    assert obs.score_breakdown["format"] == 1.0
+    assert obs.score_breakdown["anticheat"] == 1.0
+    baseline_obs = _run_baseline_for_scenario("gateway_auth_rollout")
+    assert obs.final_score > baseline_obs.final_score, (
+        f"6-step solve {obs.final_score:.3f} should beat scripted baseline "
+        f"{baseline_obs.final_score:.3f} via the efficiency dimension"
+    )
 
 
 def test_hard_does_not_require_database_recovery_check() -> None:

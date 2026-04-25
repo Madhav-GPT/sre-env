@@ -18,7 +18,7 @@ metric bar and rubric cells update with aggregates when the loop finishes.
 
 Held-out sets:
   - Basic     → 12 ``__p05`` procgen variants (eval/holdout_basic.json)
-  - Advanced  → 3 reference scenarios from sre_gym/advanced/scenarios/
+  - Advanced  → 3 reference scenarios from sre_gym/strategy/scenarios/
   - Max       → 11 chaos patterns against ecommerce_vibecoded_saas
 
 Routes preserved: /, /info, /simple, /docs, /redoc, /openapi.json,
@@ -40,7 +40,7 @@ from typing import Any, AsyncIterator
 
 import gradio as gr
 
-from sre_gym.advanced.runner import (
+from sre_gym.strategy.runner import (
     AdvancedResult,
     list_advanced_scenarios,
     run_advanced,
@@ -50,7 +50,7 @@ from sre_gym.exceptions import (
     ProviderAuthError,
     ProviderModelError,
 )
-from sre_gym.max.runner import (
+from sre_gym.operations.runner import (
     CHAOS_PATTERNS,
     MaxResult,
     list_max_families,

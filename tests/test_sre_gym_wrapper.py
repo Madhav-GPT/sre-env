@@ -57,7 +57,7 @@ def test_advanced_tier_reset_raises_with_docs_pointer() -> None:
     env = SREGym(tier=Tier.ADVANCED)
     with pytest.raises(TierNotRunnableError) as info:
         env.reset()
-    assert "docs/ADVANCED_TIER.md" in info.value.docs_path
+    assert "docs/STRATEGY_TIER.md" in info.value.docs_path
 
 
 def test_advanced_scenarios_have_horizon_dimension_signals() -> None:
@@ -96,14 +96,16 @@ def test_max_tier_reset_returns_observation() -> None:
     assert len(obs.services) >= 20
 
 
-def test_advanced_tier_run_method_returns_result() -> None:
-    """Advanced tier is now runnable via the chained-Basic-episodes runner."""
-    env = SREGym(tier=Tier.ADVANCED)
+def test_strategy_tier_run_method_returns_result() -> None:
+    """Strategy tier is runnable via the chained-Triage-episodes runner."""
+    env = SREGym(tier=Tier.STRATEGY)
     result = env.run("cascading_release_train", seed=1)
     assert result.scenario_id == "cascading_release_train"
     assert len(result.phases) == 2
     assert result.success is True
-    assert 0.5 < result.final_reward < 0.85
+    # Under the 5-component rubric, a clean chained solve composes high
+    # per-phase scores (≥0.90 each) into an above-baseline horizon reward.
+    assert 0.85 < result.final_reward <= 1.0
 
 
 def test_advanced_tier_reset_still_raises_for_per_step_caller() -> None:
@@ -111,7 +113,7 @@ def test_advanced_tier_reset_still_raises_for_per_step_caller() -> None:
     env = SREGym(tier=Tier.ADVANCED)
     with pytest.raises(TierNotRunnableError) as info:
         env.reset()
-    assert "docs/ADVANCED_TIER.md" in info.value.docs_path
+    assert "docs/STRATEGY_TIER.md" in info.value.docs_path
     assert "run(scenario_id)" in str(info.value)
 
 

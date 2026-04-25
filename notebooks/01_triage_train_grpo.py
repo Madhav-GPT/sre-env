@@ -40,9 +40,20 @@ import subprocess
 import sys
 from pathlib import Path
 
-REPO_URL = "https://github.com/dakshdoesdev/sre-enginnerllm.git"
-REPO_DIR = "sre-env"
-BRANCH = "main"
+GITHUB_USER = "Madhav-GPT"
+REPO_NAME   = "sre-env"
+BRANCH      = "main"
+REPO_DIR    = "sre-env"
+
+# If the repo is private, set GITHUB_TOKEN as a Space secret (HF Space → Settings
+# → Repository secrets). For a public repo, leave it unset.
+token = os.environ.get("GITHUB_TOKEN", "").strip()
+if token:
+    REPO_URL = f"https://{token}@github.com/{GITHUB_USER}/{REPO_NAME}.git"
+    print("Using GITHUB_TOKEN from Space secret")
+else:
+    REPO_URL = f"https://github.com/{GITHUB_USER}/{REPO_NAME}.git"
+    print("No GITHUB_TOKEN — assuming public repo")
 
 if not Path(REPO_DIR).exists():
     subprocess.check_call(["git", "clone", "--depth=1", "--branch", BRANCH, REPO_URL, REPO_DIR])

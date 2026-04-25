@@ -40,7 +40,7 @@ The honest framing: **one tier (Basic) is a real live RL environment, two tiers 
 7. [Eval comparison sweep](#7-eval-comparison-sweep)
 8. [Teacher trajectory collection (the gap that needs filling)](#8-teacher-trajectory-collection-the-gap-that-needs-filling)
 9. [HF Space deployment](#9-hf-space-deployment)
-10. [Async GRPO via OpenClaw-RL](#10-async-grpo-via-openclaw-rl)
+10. [Async GRPO via the Coliseum pool server](#10-async-grpo-via-the-coliseum-pool-server)
 11. [Claude Code skill setup](#11-claude-code-skill-setup)
 12. [Performance + cost reference](#12-performance--cost-reference)
 13. [Troubleshooting](#13-troubleshooting)
@@ -158,19 +158,19 @@ Programmatic API:
 ```python
 from sre_gym import SREGym, Tier
 
-# Basic
-env = SREGym(tier=Tier.BASIC)
+# Triage — live FastAPI env
+env = SREGym(tier=Tier.TRIAGE)
 obs = env.reset(scenario_id="memory_leak_oom__p02")
 obs = env.step({"action_type": "rollback_deploy", "service": "worker"})
 result = env.run("memory_leak_oom__p02", seed=42)
 
-# Advanced — chained Basic episodes with horizon state
-env = SREGym(tier=Tier.ADVANCED)
+# Strategy — chained Triage episodes with horizon state
+env = SREGym(tier=Tier.STRATEGY)
 result = env.run("cascading_release_train", seed=1)
 print(result.summary())
 
-# Max — Python state-machine simulator
-env = SREGym(tier=Tier.MAX)
+# Operations — Python state-machine simulator
+env = SREGym(tier=Tier.OPERATIONS)
 obs = env.reset(family_id="ecommerce_vibecoded_saas", chaos="rls_silent_leak", seed=1)
 obs = env.step({"action_type": "rollback_deploy", "service": "postgres-primary"})
 ```
@@ -335,15 +335,16 @@ curl -s https://madhav189-sre-env.hf.space/tasks | jq '.scenarios | length'   # 
 
 ---
 
-## 10. Async GRPO via OpenClaw-RL
+## 10. Async GRPO via the Coliseum pool server
 
-For training at scale (multiple A100s, distributed), the OpenClaw-RL pool-server shim wraps the env in a lease-based interface compatible with [Gen-Verse/OpenClaw-RL](https://github.com/Gen-Verse/OpenClaw-RL).
+For training at scale (multiple A100s, distributed), the [`coliseum/`](coliseum/README.md) package wraps the Triage env in a lease-based HTTP interface — the standard lease-pool contract used by parallel-rollout GRPO trainers.
 
 ```bash
-python -m uvicorn openclaw_integration.pool_server:app --port 8100
+uvicorn coliseum.server:app --host 0.0.0.0 --port 8100
+export COLISEUM_BASE_URL=http://127.0.0.1:8100
 ```
 
-Endpoints: `/allocate`, `/reset`, `/exec_tool`, `/evaluate`, `/close`, `/healthz`. Mirrors the `OpenClaw-RL/terminal-rl/remote/pool_server.py` contract exactly. See `openclaw_integration/README.md` for full launch instructions.
+Endpoints: `/allocate`, `/reset`, `/exec_tool`, `/evaluate`, `/close`, `/healthz`. The `ArenaClient` in [`coliseum/client.py`](coliseum/client.py) drives them with retry/backoff per route. The previous `openclaw_integration` package name is kept as a deprecation shim that re-exports the new names. See `coliseum/README.md` for the full env-var table and migration map.
 
 ---
 
@@ -497,7 +498,7 @@ A: Not yet — the stub images aren't published. The runnable Max surface is the
 | Mini-blog / YouTube video | 🔴 not yet | TBD |
 | Comparison hero plot | 🔴 not yet | `eval/results/comparison_hero.png` (target) |
 | Architecture deep dive | ✅ shipped | [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) |
-| Per-tier docs | ✅ shipped | [`docs/BASIC_TIER.md`](docs/BASIC_TIER.md) / [`docs/ADVANCED_TIER.md`](docs/ADVANCED_TIER.md) / [`docs/MAX_TIER.md`](docs/MAX_TIER.md) |
+| Per-tier docs | ✅ shipped | [`docs/TRIAGE_TIER.md`](docs/TRIAGE_TIER.md) / [`docs/STRATEGY_TIER.md`](docs/STRATEGY_TIER.md) / [`docs/OPERATIONS_TIER.md`](docs/OPERATIONS_TIER.md) |
 | Reward design | ✅ shipped | [`docs/REWARD_DESIGN.md`](docs/REWARD_DESIGN.md) |
 | Scenario authoring | ✅ shipped | [`docs/SCENARIO_AUTHORING.md`](docs/SCENARIO_AUTHORING.md) |
 | References + postmortems | ✅ shipped | [`docs/REFERENCES.md`](docs/REFERENCES.md) |

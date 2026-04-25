@@ -122,6 +122,21 @@ class UnifiedIncidentEnvironment(Environment[UnifiedIncidentAction, UnifiedIncid
         self._episode["why_failed"] = None
         self._episode["loop_warning"] = None
 
+        # 5-component rubric tracking (see grader.UnifiedIncidentGrader).
+        self._episode["action_counts"][action.action_type] = (
+            self._episode["action_counts"].get(action.action_type, 0) + 1
+        )
+        if (
+            action.action_type in {"query_logs", "query_metrics", "query_dependencies", "query_deploys"}
+            and self._episode["declare_resolved_called_at_tick"] is None
+        ):
+            self._episode["query_actions_before_resolved"] += 1
+        if (
+            action.action_type == "declare_resolved"
+            and self._episode["declare_resolved_called_at_tick"] is None
+        ):
+            self._episode["declare_resolved_called_at_tick"] = self._episode["tick"]
+
         if action.action_type == "query_logs":
             tool_output = self._query_logs(action.service)
             useful_observation = self._mark_evidence_once(f"logs:{action.service}", tool_output)
@@ -161,6 +176,7 @@ class UnifiedIncidentEnvironment(Environment[UnifiedIncidentAction, UnifiedIncid
         else:
             last_action_result = f"Unsupported action {action.action_type!r}."
             penalty += self._unsafe_penalty()
+            self._episode["invalid_action_count"] += 1
             self._set_failure("unsupported_action", "That action is not part of this honest narrow environment.")
 
         self._advance_world()
@@ -240,18 +256,30 @@ class UnifiedIncidentEnvironment(Environment[UnifiedIncidentAction, UnifiedIncid
             "blast_radius": 0,
             "noise_queries": 0,
             "score_breakdown": {
+                "outcome": 0.0,
+                "action_validity": 0.0,
+                "format": 0.0,
+                "anticheat": 0.0,
+                "efficiency": 1.0,
+                "final_score": 0.10,
                 "recovery_score": 0.0,
                 "containment_score": 0.0,
                 "verification_score": 0.0,
                 "impact_score": 0.0,
-                "efficiency_score": 0.05,
+                "efficiency_score": 0.0,
                 "speed_bonus": 0.0,
-                "noise_handling_score": 0.05 if knobs.get("noise_services") else 0.0,
-                "final_score": 0.10,
+                "noise_handling_score": 0.0,
             },
             "final_score": 0.10,
             "last_action_result": "",
             "done": False,
+            # 5-component rubric counters consumed by UnifiedIncidentGrader.
+            "action_counts": {},
+            "invalid_action_count": 0,
+            "query_actions_before_resolved": 0,
+            "hypothesis_submitted_at_tick": None,
+            "declare_resolved_called_at_tick": None,
+            "hypothesis_root_cause_correct": False,
         }
 
     def _noise_knobs(self) -> dict[str, Any]:
@@ -314,6 +342,8 @@ class UnifiedIncidentEnvironment(Environment[UnifiedIncidentAction, UnifiedIncid
 
     def _submit_hypothesis(self, action: UnifiedIncidentAction) -> tuple[float, bool, str]:
         assert action.hypothesis is not None
+        if self._episode["hypothesis_submitted_at_tick"] is None:
+            self._episode["hypothesis_submitted_at_tick"] = self._episode["tick"]
         normalized = json.dumps(action.hypothesis.model_dump(), sort_keys=True)
         if normalized in self._episode["hypothesis_seen"]:
             return 0.0, False, "Repeated hypothesis recorded with no additional reward."
@@ -321,6 +351,8 @@ class UnifiedIncidentEnvironment(Environment[UnifiedIncidentAction, UnifiedIncid
         truth = self._episode["scenario"]["truth"]
         payload = action.hypothesis
         cause_match = 1.0 if payload.root_cause == truth["root_cause"] else 0.0
+        if cause_match == 1.0:
+            self._episode["hypothesis_root_cause_correct"] = True
         service_match = len(set(payload.affected_services) & set(truth["affected_services"])) / len(set(truth["affected_services"]))
         action_quality = 1.0 if payload.recommended_next_action == truth["best_next_action"] else -0.4
         if cause_match == 1.0:
@@ -620,6 +652,7 @@ class UnifiedIncidentEnvironment(Environment[UnifiedIncidentAction, UnifiedIncid
             "slo_burn_rate": self._episode["slo_burn_rate"],
             "incident_resolved": self._episode["incident_resolved"],
             "containment_applied": self._episode["containment_applied"],
+            "cause_removed": bool(self._episode["cause_removed"]),
             "allowed_actions": self._allowed_actions(),
             "required_fields_by_action": self._required_fields_by_action(),
             "valid_action_example": None,
@@ -633,6 +666,12 @@ class UnifiedIncidentEnvironment(Environment[UnifiedIncidentAction, UnifiedIncid
             "last_action_result": self._episode["last_action_result"],
             "failure_type": self._episode["failure_type"],
             "why_failed": self._episode["why_failed"],
+            "action_counts": dict(self._episode["action_counts"]),
+            "invalid_action_count": int(self._episode["invalid_action_count"]),
+            "query_actions_before_resolved": int(self._episode["query_actions_before_resolved"]),
+            "hypothesis_submitted_at_tick": self._episode["hypothesis_submitted_at_tick"],
+            "declare_resolved_called_at_tick": self._episode["declare_resolved_called_at_tick"],
+            "hypothesis_root_cause_correct": bool(self._episode["hypothesis_root_cause_correct"]),
         }
 
     def _build_observation(self, last_action_result: str, tool_output: str | None, reward: float, done: bool) -> UnifiedIncidentObservation:

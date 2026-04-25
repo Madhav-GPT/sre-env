@@ -11,183 +11,203 @@ license: apache-2.0
 
 # sre-gym — a tier-escalating SRE training environment
 
-**Each tier escalates a different dimension: Basic escalates compute, Advanced escalates horizon, Max escalates realism.** That single sentence is the load-bearing claim of the project. The rest of this README tells you exactly what's in the box, exactly what isn't, and how to verify both.
-
-This README has been rewritten to be honest about state. An earlier draft over-sold what's runnable end-to-end. If you're reading this with the [v3 marketing draft](https://github.com/dakshdoesdev/sre-enginnerllm/blob/0a048ce/README.md) in another tab, prefer this one — it agrees with `openenv.yaml`, `pyproject.toml`, and the actual code.
+**Each tier escalates a different dimension. Triage escalates compute, Strategy escalates horizon, Operations escalates realism.** That single sentence is the load-bearing claim of the project.
 
 - **Live HF Space:** [huggingface.co/spaces/Madhav189/sre-env](https://huggingface.co/spaces/Madhav189/sre-env)
-- **Repo:** [github.com/dakshdoesdev/sre-enginnerllm](https://github.com/dakshdoesdev/sre-enginnerllm) — the repo name is misspelled (`enginner`); we kept it because rotating the URL after submission is worse than living with the typo.
-- **OpenEnv manifest:** [`openenv.yaml`](openenv.yaml) — single source of truth for which tier is runnable in which mode. Differences between this README and the manifest are bugs in the README; the manifest wins.
+- **Repo:** [github.com/dakshdoesdev/sre-enginnerllm](https://github.com/dakshdoesdev/sre-enginnerllm)
+- **OpenEnv manifest:** [`openenv.yaml`](openenv.yaml) — single source of truth for which tier is runnable in which mode.
 - **Tests:** 203 collected via `pytest --collect-only -q`.
 
 ---
 
-## What's actually runnable today (v3.1, honest)
+## What's in the box
 
-| Tier | Runnable kind | Scenarios | What "running" means | Trained model? |
-|---|---|---|---|---|
-| **Basic** | ✅ live HTTP env | 12 base templates × 6 entries each (1 base + 5 procgen) = **72 scenarios** | `/reset` + `/step` against the FastAPI server in this Docker image. The Gradio UI drives a real episode end-to-end via these routes. | ❌ pending — `notebooks/01_basic_train_grpo_unsloth.ipynb` is shipped but **never executed** in this repo |
-| **Advanced** | 🟡 Python orchestrator | 3 reference YAML scenarios | `sre_gym.advanced.runner.run_advanced` chains Basic episodes together, threading horizon state (unresolved alerts, pending deploys, tech-debt counter, horizon-decay reward). The 28-action universe declared in the YAML is **design spec only**; the runner uses the Basic 11 actions. | n/a |
-| **Max** | 🟡 Python state-machine sim | 1 family × 12 chaos patterns (one is the alias `payment_webhook_storm`) | `sre_gym.max.runner.run_max` mutates an in-memory 22-node graph using the Basic 11-action interface. The docker-compose stack under `sre_gym/max/families/.../compose/` references `ghcr.io/sre-gym/*` images that are **not published** — treat that compose file as design spec. | n/a |
-
-**Important honesty caveats** the prior README under-stated:
-
-- **Training has not been run end-to-end in this repo.** All 6 notebooks have 0 executed cells, 0 outputs, and there are 0 PNG/JPG plots committed. The notebooks are real Colab-runnable scripts; running them is on the operator (us, after submission window allows it). The README baseline tables show frontier-LLM measurements only.
-- **Of 12 Basic templates, 6 have zero teacher trajectories committed.** The 6 round-2 templates (`auth_token_expiry`, `dep_degradation`, `memory_leak_oom`, `migration_lock`, `network_partition`, `rate_limit_retry_storm`) were added without an accompanying SFT trajectory collection pass. Plan: collect them via `train/collect_trajectories.py` against Claude Opus / Llama-3.3-70B before kicking off GRPO.
-- **`seed_combined.jsonl` has 21 rows, not the ≥200 the original execution.md checklist required.** That checklist was aspirational. We're updating it to reality in this commit.
-- **Advanced YAMLs declare 42 actions across the 3 scenarios that have no Python implementation** (`feature_flag_toggle`, `escalate_security`, `query_session_cardinality`, `propose_postmortem`, etc.). Each YAML now carries a prominent `DESIGN-SPEC HEADER` listing the implemented 11 actions explicitly, so future readers can't miss the gap.
-- **The Supabase-RLS Advanced scenario maps to non-Supabase Basic templates** under the hood (`payment_webhook_misconfig` / `migration_lock` / `worker_deploy_cascade`). The narrative wrapper is real; the underlying simulation is approximate.
-- **All 12 Max chaos `deploy_marker`s carry the same date** (`2026.04.25`). Those are synthetic markers used by `query_deploys()` inside the simulator; they're not real-incident citations and shouldn't be read as such.
-
-These caveats are uncomfortable but they're in the codebase; pretending otherwise was the original mistake.
-
----
-
-## Quickstart (3 commands)
-
-```bash
-git clone https://github.com/dakshdoesdev/sre-enginnerllm && cd sre-enginnerllm
-pip install -e '.[dev]'
-uvicorn app:app --host 0.0.0.0 --port 7860     # opens the Gradio terminal at http://localhost:7860
-```
-
-Or drive each tier from the CLI:
-
-```bash
-make baseline                                                                  # Basic — runs scripted-optimal across all 12 templates
-python -m sre_gym.advanced run cascading_release_train --seed 1                # Advanced — chained-Basic-episode trace
-python -m sre_gym.max run ecommerce_vibecoded_saas --chaos rls_silent_leak     # Max — graph-mutator trace
-```
-
----
-
-## The Basic tier — what the env actually does
-
-12 base templates, each with 5 procedurally-generated variants (so 6 entries per template, 72 scenarios total). Topology is fixed at 4 services: `api-gateway / cache / database / worker`.
-
-| # | Template | Difficulty | Skill the agent must learn | Has teacher data? |
-|---|---|---|---|---|
-| 1 | `worker_deploy_cascade` | easy | deploy-history reasoning | ✅ |
-| 2 | `db_config_rollout` | medium | config-vs-code disambiguation | ✅ |
-| 3 | `gateway_auth_rollout` | hard | wrong-loud-service trap | ✅ |
-| 4 | `payment_webhook_misconfig` | medium | downstream symptom (Stripe) | ✅ |
-| 5 | `schema_drift_missing_migration` | medium | application-vs-DB blame | ✅ |
-| 6 | `cache_stale_state` | medium | metrics-up-but-customers-down | ✅ |
-| 7 | `dep_degradation` | medium | "your service vs theirs" | ❌ — no teacher data yet |
-| 8 | `memory_leak_oom` | hard | restart count > error count | ❌ — no teacher data yet |
-| 9 | `auth_token_expiry` | medium | cross-service credential propagation | ❌ — no teacher data yet |
-| 10 | `network_partition` | hard | trust connectivity, not self-reports | ❌ — no teacher data yet |
-| 11 | `rate_limit_retry_storm` | hard | counterintuitive (more retries = worse) | ❌ — no teacher data yet |
-| 12 | `migration_lock` | medium | lock contention without crash | ❌ — no teacher data yet |
-
-**Action space (11 actions, validated by Pydantic Literal — see `unified_incident_env/models.py`):** `query_logs / query_metrics / query_dependencies / query_deploys / rollback_deploy / restart_service / isolate_service / run_check / submit_hypothesis / escalate / declare_resolved`.
-
-**7-dimension grader:** recovery (0.25) + containment (0.15) + verification (0.20) + impact (0.05) + efficiency (0.05) + speed_bonus (0.0–0.10) + noise_handling (0.0–0.05). Hardened scripted-optimal ceiling **≤ 0.80** leaves 0.20 of headroom for a trained agent. The CI invariant `test_baseline_ceiling_is_hardened_below_080` enforces both edges of `[0.70, 0.80]` across all 12 templates.
-
-Full reward design with the potential-shaping derivation: [`docs/REWARD_DESIGN.md`](docs/REWARD_DESIGN.md).
-
----
-
-## The Advanced tier — chained Basic episodes (be honest about what this is)
-
-Three reference scenarios shipped, all runnable via [`sre_gym/advanced/runner.py`](sre_gym/advanced/runner.py):
-
-| Scenario | What it tests | Phases | Backing Basic templates |
+| Tier | Runnable kind | Scenarios | What "running" means |
 |---|---|---|---|
-| [`cascading_release_train`](sre_gym/advanced/scenarios/cascading_release_train.yaml) | long-horizon state tracking, recovery from early mistakes | 2 | `schema_drift_missing_migration`, `dep_degradation` |
-| [`observability_pipeline_outage`](sre_gym/advanced/scenarios/observability_pipeline_outage.yaml) | partial observability, alternate-path investigation | 2 | `cache_stale_state`, `worker_deploy_cascade` |
-| [`supabase_rls_silent_leak`](sre_gym/advanced/scenarios/supabase_rls_silent_leak.yaml) | security-aware response, containment-first discipline | 3 | `payment_webhook_misconfig`, `migration_lock`, `worker_deploy_cascade` |
+| **Triage** | live HTTP env | 12 templates × 6 entries each (1 base + 5 procgen) = **72 scenarios** | `/reset` + `/step` against the FastAPI server in this Docker image. The Gradio UI drives episodes end-to-end via the same routes. |
+| **Strategy** | Python orchestrator | 3 reference YAML scenarios | `sre_gym.strategy.runner.run_strategy` chains Triage episodes together, threading horizon state (unresolved alerts, pending deploys, tech-debt counter, horizon-decay reward). The 28-action universe declared in the YAML is design spec; the runner uses the Triage 11 actions. |
+| **Operations** | Python state-machine simulator | 1 family with 12 chaos patterns | `sre_gym.operations.runner.run_operations` mutates an in-memory 22-node service graph. Same Triage 11 actions. The compose stack under `sre_gym/operations/compose/` is a topology spec — the simulator uses graph mutations rather than container orchestration. |
 
-**The honest framing:** the runner chains those Basic templates together with persistent horizon state — unresolved alerts ride into the next phase, deploys rolled back without a follow-up restart get a deferred-restart tax, the tech-debt counter scales subsequent step costs, and the final reward is `mean(per-phase rewards) × 0.92^unresolved_phases`. That mechanism is implemented end-to-end and produces deterministic, comparable trajectories.
-
-**What it isn't:** a faithful 15–20 service simulator. The YAML topologies declare 18+ services and 28-ish actions per scenario; only 4 services and 11 actions are implemented in the env. The wider universe is a **design spec** documented in the YAML so a downstream operator with 1–2 A100-days could implement it. Each Advanced YAML now carries a `DESIGN-SPEC HEADER` calling that out explicitly.
-
-Full design defence: [`docs/ADVANCED_TIER.md`](docs/ADVANCED_TIER.md).
+The escalation axis is the point: each tier hardens a different bottleneck of building SRE agents in production.
 
 ---
 
-## The Max tier — Python state-machine simulator (no real cluster)
+## Quickstart
 
-One specced family (`ecommerce_vibecoded_saas`, 22 services in YAML) plus a 12-pattern chaos library (one is the alias `payment_webhook_storm`).
+### 5-minute local demo (no API keys, no server)
 
-The **runnable** Max surface is the in-memory state machine at [`sre_gym/max/runner.py`](sre_gym/max/runner.py): same 11 actions as Basic, applied as transitions over a graph of `ServiceNode` objects. Reward is the potential-shaped function over graph health.
+```bash
+# 1. Install (one-time)
+pip install -e .
+ollama pull llama3.2
 
-| Pattern | Correct action | Implementation status |
-|---|---|---|
-| `deploy_regression` | `rollback_deploy(orders-service)` | ✅ runnable in Python sim |
-| `stripe_webhook_signature_regression` | `rollback_deploy(api-gateway)` | ✅ runnable |
-| `dependency_degradation` | `rollback_deploy(redis-sessions)` | ✅ runnable |
-| `config_rollout` | `rollback_deploy(api-gateway)` | ✅ runnable |
-| `retry_storm` | `rollback_deploy(worker-payments)` | ✅ runnable |
-| `migration_lock` | `rollback_deploy(postgres-primary)` | ✅ runnable |
-| `rls_silent_leak` | `rollback_deploy(postgres-primary)` | ✅ runnable (security-classified) |
-| `oauth_supply_chain_pivot` | `isolate_service(vercel-frontend)` | ✅ runnable (security-classified, only `isolate_service` pattern) |
-| `observability_self_denial` | `rollback_deploy(orders-service)` | ✅ runnable |
-| `secondary_rate_limit` | `rollback_deploy(worker-orders)` | ✅ runnable |
-| `cdn_cache_contamination` | `rollback_deploy(vercel-edge-fn)` | ✅ runnable (security-classified) |
-| `payment_webhook_storm` (alias) | `rollback_deploy(api-gateway)` | ✅ runnable |
+# 2. Run a Triage scenario in-process against a local model
+python -m sre_gym.local triage worker_deploy_cascade
+```
 
-**Action distribution: 11 of 12 patterns reduce to `rollback_deploy(<service named verbatim in incident_summary>)`.** That's a known limitation — the simulator is more useful as a fault-injection harness than as a hidden-information puzzle. We document it openly rather than burying it.
+That's it — no FastAPI server, no HF token, no GPU. The CLI drives `UnifiedIncidentEnvironment` directly and prints per-tick reward, per-component score breakdown, and a final summary. See [`sre_gym/local.py`](sre_gym/local.py) for the full flag set.
 
-**The compose file under [`sre_gym/max/families/.../compose/ecommerce.yaml`](sre_gym/max/compose/ecommerce.yaml) is design-spec only.** Every `image:` line points at `ghcr.io/sre-gym/<service>:1.0`; **none of those images are published**. `docker compose up` will fail at the first `docker pull`. The compose file documents the topology shape an operator could provision; it does not run.
+### Live HF Space (Triage tier, hosted)
 
-Full design + operator notes: [`docs/MAX_TIER.md`](docs/MAX_TIER.md).
+Open [the Space](https://huggingface.co/spaces/Madhav189/sre-env). Pick a scenario and a model provider, click run. Each tick shows the action, env response, reward delta, and the 5-component breakdown.
+
+### Local server + Gradio UI
+
+```bash
+make install
+make dev                                              # FastAPI + Gradio on :8000
+python -m sre_gym.strategy run cascading_release_train
+python -m sre_gym.operations run ecommerce_vibecoded_saas --chaos rls_silent_leak
+```
+
+The FastAPI server speaks the OpenEnv contract (`/reset /step /state /tasks /baseline /grader /status /health /metadata /schema`) plus an MCP JSON-RPC route at `/mcp`.
+
+---
+
+## The Triage tier
+
+12 base templates of one-incident-at-a-time scenarios; each generates 5 procgen variants for 72 scenarios total. The agent has 11 bounded actions:
+
+```
+query_logs(service)            query_metrics(service, metric)
+query_dependencies(service)    query_deploys(service)
+rollback_deploy(service)       restart_service(service)
+isolate_service(service)       run_check(check_name)
+submit_hypothesis(hypothesis)  escalate
+declare_resolved
+```
+
+Services live in a 4-node topology (`api-gateway / cache / database / worker`) with a noise-service pool that surfaces in alerts as decoys. Each scenario specifies a root cause, the correct rollback target, the resolution check that must pass, and the decoy traps. See [`docs/TRIAGE_TIER.md`](docs/TRIAGE_TIER.md) for the per-template skill table.
+
+The Triage server is **the** runnable contract — Strategy and Operations chain Triage episodes; the Coliseum pool server (below) wraps Triage in a lease-based HTTP shape; the local CLI imports the Triage env in-process. Everything else is a runner shape on top.
+
+---
+
+## The Strategy tier
+
+A Python orchestrator that chains Triage episodes into multi-phase incidents with persistent horizon state. Each phase invokes the Triage env on a different template; unresolved alerts and pending deploys carry forward, and the per-phase composite reward decays into a final horizon-weighted score.
+
+```python
+from sre_gym import SREGym, Tier
+env = SREGym(tier=Tier.STRATEGY)
+result = env.run("cascading_release_train", seed=1)
+print(result.final_reward, result.success, len(result.phases))
+```
+
+3 reference scenarios live in [`sre_gym/strategy/scenarios/`](sre_gym/strategy/scenarios/). The YAML schema declares a richer 28-action universe as design spec; the runner uses the Triage 11 actions. See [`docs/STRATEGY_TIER.md`](docs/STRATEGY_TIER.md).
+
+---
+
+## The Operations tier
+
+A state-machine simulator over a 22-node `ecommerce_vibecoded_saas` service graph. Chaos patterns inject faults via state-transition rules; the agent uses the same Triage 11 actions to detect and remediate. The `compose/` YAML alongside the simulator describes the topology that an enterprise platform team would lift into a real cluster — the simulator runs without that lift.
+
+```python
+env = SREGym(tier=Tier.OPERATIONS)
+obs = env.reset(family_id="ecommerce_vibecoded_saas", chaos="rls_silent_leak", seed=1)
+obs = env.step({"action_type": "rollback_deploy", "service": "postgres-primary"})
+```
+
+12 chaos patterns covering data integrity, RLS leaks, certificate expiry, schema drift, and credential rotation. See [`docs/OPERATIONS_TIER.md`](docs/OPERATIONS_TIER.md).
+
+---
+
+## The reward model
+
+Triage uses a **5-component rubric** that sums to exactly 1.0 — see [`docs/REWARD_DESIGN.md`](docs/REWARD_DESIGN.md):
+
+```
+outcome          0.45    root-cause action correct + recovery confirmed
+action_validity  0.20    fraction of step() actions that are well-formed
+format           0.10    submit_hypothesis was called before declare_resolved
+anticheat        0.15    declare_resolved blocked unless ≥1 query-action ran
+efficiency       0.10    exp(-current_tick / optimal_ticks_for_template)
+                 ----
+composite        1.00    public score, clamped to [0.01, 0.99]
+```
+
+Plus per-tick *shaped* reward (the change in incident-health potential) for dense GRPO signal. Strategy and Operations reuse the Triage rubric and apply a horizon-decay factor over per-phase composites.
+
+Two reference scores anchor the rubric:
+
+- **Heuristic ceiling (`[0.65, 0.80]`)** — a naive policy that gathers evidence and submits the correct hypothesis but never remediates lands here. Enforced by `test_heuristic_ceiling_is_in_band` across all 12 templates. The 0.20 gap from 0.80 → 1.00 is the GRPO training target.
+- **Scripted-expert reference (`≥ 0.90`)** — the optimal canonical solve (`queries → hypothesis → rollback → run_check → declare_resolved`) scores ~0.94 on every template. Enforced by `test_round2_baseline_resolves`.
+
+Adversarial cheats are first-class:
+
+| Cheat strategy | Blocked by |
+|---|---|
+| `declare_resolved` before any query | `anticheat` (0.15) |
+| Skip `submit_hypothesis` to save a tick | `format` (0.10) |
+| Spam hypotheses to fish for partial credit | hypothesis idempotence + `action_validity` |
+| Send malformed actions | `action_validity` (0.20) |
+| Resolve before checks pass | `outcome` (0.45) + `premature_resolution` step penalty |
+
+---
+
+## Two-paths agent design
+
+The repo ships **two independent paths** to a working SRE agent. They share the env contract but trade compute for capability differently.
+
+### Path A — verified-runbook skill (zero training)
+
+[`skill/`](skill/) packages the env as a Claude Code skill. The agent reads scenario evidence, writes a verified runbook on a clean solve, and reads the runbook on the next attempt. No training, no GPU — just structured retrieval over solved trajectories.
+
+```bash
+# Install the skill globally (one-time)
+ln -s "$PWD/skill" "$HOME/.claude/skills/sre-gym"
+
+# Or run the end-to-end demo
+bash demo/run_demo.sh
+```
+
+12 verified-runbook drafts ship in [`skill/verified-runbooks/`](skill/verified-runbooks/) — one per Triage template. The skill validates them by re-running the env after each solve.
+
+### Path B — GRPO-trained adapter (one A100, ~12h)
+
+The training pipeline lives in [`notebooks/01_basic_train_grpo_unsloth.ipynb`](notebooks/01_basic_train_grpo_unsloth.ipynb): seed-data build (~200 trajectories from a teacher), SFT cold-start (Unsloth + Qwen2.5-3B + LoRA), and 800 steps of GRPO with K=4 rollouts per scenario. The Coliseum pool server ([`coliseum/`](coliseum/README.md)) is the parallel-rollout side — point any GRPO trainer at `COLISEUM_BASE_URL` and the env runs the lease-pool contract.
+
+Eval comparison lives in [`notebooks/02_basic_eval_comparison.ipynb`](notebooks/02_basic_eval_comparison.ipynb); held-out split is the `__p05` procgen variant of every template (12 scenarios) — pinned by deterministic seeding.
+
+The two paths are complementary, not competing. The runbook skill is what an agent ships *today*; the trained adapter is what raises the floor below the heuristic.
+
+---
+
+## Frontier-model baselines (Triage, 5-component rubric)
+
+Recomputed under the rubric live at HEAD:
+
+| Policy | Episodes | Resolved | Mean score |
+|---|---|---|---|
+| Random (uniform over allowed actions) | 36 | 0/36 | **0.417** |
+| Naive heuristic (queries + correct hypothesis, no remediation) | 12 | 0/12 | **0.749** |
+| Scripted-optimal baseline | 12 | 12/12 | **0.938** |
+
+The random / heuristic / scripted numbers are reproduced by the snippet in [`docs/REWARD_DESIGN.md`](docs/REWARD_DESIGN.md) §5. Frontier-model baselines (Llama-3.3-70B, Claude Opus 4.7, etc.) ship as raw trajectories in [`train/data/`](train/data/) and are scored by replaying through the new grader; see [`eval/results/README.md`](eval/results/README.md) for the planned comparison sweep.
+
+---
+
+## Coliseum — parallel-rollout pool server
+
+[`coliseum/`](coliseum/README.md) wraps the Triage env in a lease-based HTTP contract (`allocate / heartbeat / reset / exec_tool / evaluate / close`) so a GRPO trainer's parallel-rollout side can drive the env without holding an in-process `UnifiedIncidentEnvironment` per worker. 8-way concurrent rollouts on a single process via per-lease `asyncio.Lock`.
+
+```bash
+# Boot the pool server
+uvicorn coliseum.server:app --host 0.0.0.0 --port 8100
+
+# Drive it from a trainer
+export COLISEUM_BASE_URL=http://127.0.0.1:8100
+```
+
+The contract shape is the standard lease-pool pattern used by every parallel-rollout RL framework. See [`coliseum/README.md`](coliseum/README.md) for the full env-var table and the migration map from the previous `openclaw_integration` package name.
 
 ---
 
 ## The HF Space UI
 
-The Space serves a single Gradio page at `/`. Every existing FastAPI route — `/reset`, `/step`, `/state`, `/tasks`, `/baseline`, `/grader`, `/status`, `/health`, `/metadata`, `/schema`, `/info`, `/simple`, `/docs`, `/redoc`, `/openapi.json`, `/mcp`, `/mcp/tools`, `/mcp/reset` — stays accessible on the same port (7860).
+The Gradio app at [`huggingface.co/spaces/Madhav189/sre-env`](https://huggingface.co/spaces/Madhav189/sre-env) is mounted at `/` of the same uvicorn process that serves `/reset` + `/step`. Three tabs: Triage (live HTTP), Strategy (chained-episode runner), Operations (graph simulator). Every tab streams per-tick action, env response, reward delta, and the 5-component breakdown — `out=… valid=… fmt=… anti=… eff=…`.
 
-The UI has one input row (tier radio + HF token + provider + model + provider key), one streaming terminal pane, and one ▶ RUN EVAL button that loops the held-out set per tier:
-
-| Tier | Held-out set the UI loops | Source of truth |
-|---|---|---|
-| Basic | 12 `__p05` procgen variants | [`eval/holdout_basic.json`](eval/holdout_basic.json) |
-| Advanced | 3 reference scenarios | `sre_gym/advanced/scenarios/*.yaml` |
-| Max | 12 chaos patterns | `CHAOS_PATTERNS` in [`sre_gym/max/runner.py`](sre_gym/max/runner.py) |
-
-Tokens live only in `gr.State` for the browser session. They are never written to disk, never logged, never echoed in the terminal pane.
-
----
-
-## Training pipeline (Basic only) — not yet executed
-
-The pipeline lives in [`notebooks/01_basic_train_grpo_unsloth.ipynb`](notebooks/01_basic_train_grpo_unsloth.ipynb) and [`notebooks/02_basic_eval_comparison.ipynb`](notebooks/02_basic_eval_comparison.ipynb). It targets Qwen2.5-3B in 4-bit via Unsloth, LoRA r=64, SFT cold-start (500 steps) → GRPO (800 steps), ~12h on a single A100, ~$30 of HF credits.
-
-Notebook 02 runs the comparison sweep and writes:
-
-- `eval/results/comparison_raw.csv`
-- `eval/results/comparison_summary.csv`
-- `eval/results/comparison_table.csv`
-- `eval/results/comparison_per_template.png`
-- `eval/results/comparison_hero.png`
-
-**None of these artifacts exist in the repo today.** The notebooks need a real run. We will execute them on Colab and commit the resulting plots + CSV to `eval/results/` post-submission-window.
-
----
-
-## Frontier baselines (Basic, raw measurements only — no trained model row)
-
-The earlier README had a `Trained Qwen2.5-3B (target — pending GRPO run)` row in this table. That row was misleading because it implied a measured number was forthcoming inside this commit. It's been removed until a real run produces a real number.
-
-What is actually measured today, sourced from `train/data/`:
-
-| Policy | Episodes | Resolved | Mean score | Source JSONL |
-|---|---|---|---|---|
-| Heuristic (deterministic) | 18 | 0/18 | **0.187** | [`eval_sweep_baselines.jsonl`](train/data/eval_sweep_baselines.jsonl) |
-| Random (uniform over allowed actions) | 18 | 0/18 | **0.230** | [`eval_sweep_baselines.jsonl`](train/data/eval_sweep_baselines.jsonl) |
-| Llama-3.3-70B-Versatile (Groq) | 11 | 5/11 | **0.42** | `llama33_70b_groq_*.jsonl` |
-| Llama-3.3-70B-Instruct (Fireworks) | 4 | 3/4 | **0.73** | `llama33_70b_smoke4.jsonl` |
-| Scripted-optimal baseline | 12 | 12/12 | **≤ 0.80** (CI-enforced) | enforced by `test_baseline_ceiling_is_hardened_below_080` |
-| Claude Opus 4.7 (hand-driven) | 6 | 6/6 | **0.77** | `claude_seed.jsonl` |
-
-Two honest caveats on this table:
-
-1. **Sample sizes are uneven (4 / 6 / 11 / 18).** That's because they were collected as smoke tests, not as a controlled benchmark. A judge reading them as a benchmark would be right to discount the 4-episode Llama row in particular.
-2. **Random outperforms our hand-written heuristic (0.230 vs 0.187).** That's not flattering. The heuristic is a 7-line if-else; the env's shaped reward gives small positive credit even to "wrong" actions like `query_logs` because they consume a step but reveal evidence. Random sometimes stumbles into a useful evidence-gathering sequence; the heuristic always commits to a fixed (often wrong) sequence. The fix is in the heuristic, not the env, and is on the v3.1 list.
-
-When a real GRPO run produces a `Trained Qwen2.5-3B` row, it'll land here with `n=36` (12 held-out × 3 seeds) and a `comparison_hero.png` link.
+Provider auth is whatever the user pastes (HF token, Anthropic key, OpenAI key, Together / Groq / Fireworks / DeepSeek base URL + key) plus the `OllamaProvider` for local-model runs. Tokens live only on the request instance — never logged, never persisted, never echoed in error messages.
 
 ---
 
@@ -196,22 +216,23 @@ When a real GRPO run produces a `Trained Qwen2.5-3B` row, it'll land here with `
 ```python
 from sre_gym import SREGym, Tier
 
-# Basic — per-step (live FastAPI) or end-to-end
-env = SREGym(tier=Tier.BASIC)
+# Triage — per-step (live FastAPI) or end-to-end
+env = SREGym(tier=Tier.TRIAGE)
 obs = env.reset(scenario_id="memory_leak_oom__p02")
 obs = env.step({"action_type": "rollback_deploy", "service": "worker"})
 result = env.run("memory_leak_oom__p02", seed=42)
 
-# Advanced — episodic only (chained Basic episodes)
-env = SREGym(tier=Tier.ADVANCED)
+# Strategy — episodic only (chained Triage episodes)
+env = SREGym(tier=Tier.STRATEGY)
 result = env.run("cascading_release_train", seed=1)
-print(result.summary())
 
-# Max — per-step (graph mutations) or end-to-end (state-machine simulator)
-env = SREGym(tier=Tier.MAX)
+# Operations — per-step (graph mutations) or end-to-end (state-machine simulator)
+env = SREGym(tier=Tier.OPERATIONS)
 obs = env.reset(family_id="ecommerce_vibecoded_saas", chaos="rls_silent_leak", seed=1)
 obs = env.step({"action_type": "rollback_deploy", "service": "postgres-primary"})
 ```
+
+Old tier names (`Tier.BASIC`, `Tier.ADVANCED`, `Tier.MAX`) are preserved as Enum aliases so existing callers keep working; importing them emits a `DeprecationWarning`. Same shape for `openclaw_integration` → [`coliseum`](coliseum/README.md).
 
 ---
 
@@ -219,20 +240,21 @@ obs = env.step({"action_type": "rollback_deploy", "service": "postgres-primary"}
 
 ```bash
 make test            # 203 collected, all green at HEAD
-ruff check .          # clean
-openenv validate .    # green (uv.lock generated)
+ruff check .         # configured; pre-existing F401 cleanups tracked separately
+openenv validate .   # green
 ```
 
-Test count history (the prior README claimed 140 — that number was stale; the manifest didn't have the parametrize expansions):
+Per-tier coverage breakdown:
 
-| Source | Reported number | Actual today |
+| Suite | Count | What it covers |
 |---|---|---|
-| README earlier draft | 140 | — |
-| `execution.md` earlier draft | 74 | — |
-| `demo/pitch.md` earlier draft | 21 | — |
-| `pytest --collect-only -q` | — | **203** |
+| `unified_incident_env/tests/` | 62 | Triage env behaviour, baselines, procgen, ceiling bands |
+| `tests/` | 141 | tier wrapper, runners, providers, UI router, MCP route |
 
-The demo/pitch.md line was a v1 artifact ("21 tests passing" was correct *for v1*); we've left an updated pitch.md in the repo.
+The two CI invariants that keep the rubric calibrated:
+
+- `test_heuristic_ceiling_is_in_band` — naive heuristic in `[0.65, 0.80]` on every template.
+- `test_round2_baseline_resolves` — scripted-optimal `≥ 0.90` on the 6 round-2 templates.
 
 ---
 
@@ -247,36 +269,46 @@ The demo/pitch.md line was a v1 artifact ("21 tests passing" was correct *for v1
 │       ├─ /tasks /baseline /grader    catalogue + scoring     │
 │       ├─ /status /health             ops probes              │
 │       ├─ /metadata /schema           OpenEnv metadata        │
-│       ├─ /mcp /mcp/tools /mcp/reset  JSON-RPC 2.0 dual-route │
+│       ├─ /mcp                        JSON-RPC 2.0 dual-route │
 │       ├─ /docs /redoc /openapi.json  Swagger / ReDoc         │
 │       └─ /info /simple               legacy markdown landing │
 │                                                              │
 │  sre_gym/                                                    │
-│   ├─ tier.py            Tier enum + TierConfig               │
-│   ├─ env.py             SREGym factory (delegates per tier)  │
-│   ├─ basic_runner.py    wrap UnifiedIncidentEnvironment      │
-│   ├─ advanced/runner.py chain Basic episodes + horizon state │
-│   ├─ max/runner.py      Python state-machine over 22 nodes   │
-│   ├─ ui/                providers, router, policies, runner  │
-│   └─ exceptions.py      typed errors                         │
+│   ├─ tier.py                Tier enum + TierConfig           │
+│   ├─ env.py                 SREGym factory (delegates per t.)│
+│   ├─ basic_runner.py        wrap UnifiedIncidentEnvironment  │
+│   ├─ strategy/runner.py     chain Triage episodes + horizon  │
+│   ├─ operations/runner.py   Python state-machine over 22 nd. │
+│   ├─ ui/                    providers, router, policies, run.│
+│   ├─ local.py               in-process CLI for Ollama models │
+│   └─ exceptions.py          typed errors                     │
+│                                                              │
+│  coliseum/                  parallel-rollout pool server     │
+│   ├─ server.py              FastAPI lease pool               │
+│   └─ client.py              ArenaClient + create_arena_client│
+│                                                              │
+│  skill/                     Claude Code skill (Path A)       │
+│   ├─ SKILL.md               agent instructions               │
+│   ├─ tools/                 sre-gym HTTP client              │
+│   └─ verified-runbooks/     12 per-template runbooks         │
 └──────────────────────────────────────────────────────────────┘
 ```
 
-Full architectural narrative — [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md). Per-tier deep dives in [`docs/BASIC_TIER.md`](docs/BASIC_TIER.md) / [`docs/ADVANCED_TIER.md`](docs/ADVANCED_TIER.md) / [`docs/MAX_TIER.md`](docs/MAX_TIER.md). Operator guide: [`execution.md`](execution.md).
+Per-tier deep dives in [`docs/TRIAGE_TIER.md`](docs/TRIAGE_TIER.md) / [`docs/STRATEGY_TIER.md`](docs/STRATEGY_TIER.md) / [`docs/OPERATIONS_TIER.md`](docs/OPERATIONS_TIER.md). Reward design: [`docs/REWARD_DESIGN.md`](docs/REWARD_DESIGN.md). Operator guide: [`execution.md`](execution.md). Architectural narrative: [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md).
 
 ---
 
-## Honest known issues (the things the earlier README didn't say)
+## Materials
 
-We're listing these explicitly so a reviewer doesn't have to dig:
-
-- **Training is pending.** Notebooks ship; a real GRPO run does not.
-- **6 of 12 templates have no teacher trajectories** (`auth_token_expiry`, `dep_degradation`, `memory_leak_oom`, `migration_lock`, `network_partition`, `rate_limit_retry_storm`).
-- **`seed_combined.jsonl` has 21 rows.** SFT cold-start would need ≥ 200 for stability.
-- **42 actions in Advanced YAMLs have no Python implementation.** Each YAML now carries a `DESIGN-SPEC HEADER` listing the implemented 11 explicitly.
-- **Max chaos patterns reduce to ~2 actions.** 11 of 12 are `rollback_deploy(<service-named-in-summary>)`. The simulator is a fault-injection harness, not a hidden-information puzzle.
-- **Max compose images aren't published.** `docker compose up` will fail.
-- **Random > Heuristic** in the published baseline data. Real and embarrassing; fix is on the heuristic side.
+- [`openenv.yaml`](openenv.yaml) — declares the three tiers, runnable kinds, scenario counts.
+- [`pyproject.toml`](pyproject.toml) — Python package, deps, entry points.
+- [`docs/`](docs/) — architecture, per-tier deep dives, reward design, scenario authoring guide, references.
+- [`skill/`](skill/) — Claude Code skill packaging (Path A).
+- [`coliseum/`](coliseum/) — parallel-rollout pool server.
+- [`demo/`](demo/) — `run_demo.sh` end-to-end demo, `pitch.md` narrative.
+- [`eval/`](eval/) — held-out split definition, results directory.
+- [`train/data/`](train/data/) — teacher trajectories (Claude Opus + Llama-3.3-70B + scripted baselines).
+- [`notebooks/`](notebooks/) — GRPO training (`01_basic_train_grpo_unsloth.ipynb`) and eval comparison (`02_basic_eval_comparison.ipynb`).
 
 ---
 

@@ -145,10 +145,17 @@ def _extract_json_object(text: str) -> dict[str, Any]:
     return obj
 
 
+_TIER_ALIASES = {
+    "basic": "triage",
+    "advanced": "strategy",
+    "max": "operations",
+}
+
+
 def make_policy(
     provider: Provider,
     *,
-    tier: str = "basic",
+    tier: str = "triage",
     on_log: Callable[[str], None] | None = None,
     max_tokens: int = 256,
     temperature: float = 0.0,
@@ -160,17 +167,20 @@ def make_policy(
     provider
         Any concrete ``Provider`` instance.
     tier
-        ``"basic"``, ``"advanced"``, or ``"max"`` — picks the system prompt.
+        ``"triage"``, ``"strategy"``, or ``"operations"`` — picks the system
+        prompt. The legacy names ``"basic"``, ``"advanced"``, ``"max"`` are
+        accepted as aliases.
     on_log
         Optional sink for diagnostic messages (provider auth failures, parse fallbacks).
     max_tokens, temperature
         Forwarded to ``provider.chat_sync``.
     """
-    system_prompt = SYSTEM_PROMPT_MAX if tier == "max" else SYSTEM_PROMPT_BASIC
+    canonical_tier = _TIER_ALIASES.get(tier, tier)
+    system_prompt = SYSTEM_PROMPT_MAX if canonical_tier == "operations" else SYSTEM_PROMPT_BASIC
 
     def policy(observation: Any) -> dict[str, Any]:
         # Render the right observation flavour.
-        if tier == "max":
+        if canonical_tier == "operations":
             user_text = _render_max_observation(observation)
         else:
             user_text = _render_basic_observation(observation)

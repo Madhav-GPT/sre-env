@@ -80,32 +80,32 @@ def _line(start: float, prefix: str, body: str) -> str:
 
 
 def _project_breakdown(score_breakdown: dict[str, float]) -> dict[str, float]:
-    """Project the env's 7-dim rubric into the 5 surface dimensions the UI shows.
+    """Project the env's 5-component rubric onto the UI's terminal-pane keys.
 
-    Returns a dict with keys ``outcome / valid / fmt / anti / eff``:
+    The grader (``unified_incident_env/server/grader.py``) emits the canonical
+    keys ``outcome``, ``action_validity``, ``format``, ``anticheat``,
+    ``efficiency`` directly. The UI keeps shorter aliases for the per-tick
+    one-liner (``out / valid / fmt / anti / eff``).
 
-    - ``outcome``  = recovery_score + impact_score
-    - ``valid``    = containment_score + verification_score
-    - ``fmt``      = 1.0 if no parse failures occurred during the episode
-                     (the UI uses ``runner_format_score`` to flip this to <1.0
-                     on parse-fail; default is 1.0 since the env validates JSON
-                     at the boundary)
-    - ``anti``     = noise_handling_score
-    - ``eff``      = efficiency_score + speed_bonus
+    The runner separately tracks parse failures during a streamed episode and
+    overlays them via ``runner_format_score``; the displayed ``fmt`` is the
+    *minimum* of the env's ``format`` dim and the runner's parse-fail score.
     """
     sb = score_breakdown or {}
+    env_format = float(sb.get("format", 0.0))
+    runner_format = float(sb.get("runner_format_score", 1.0))
     return {
-        "outcome": round(sb.get("recovery_score", 0.0) + sb.get("impact_score", 0.0), 3),
-        "valid": round(sb.get("containment_score", 0.0) + sb.get("verification_score", 0.0), 3),
-        "fmt": float(sb.get("runner_format_score", 1.0)),
-        "anti": round(sb.get("noise_handling_score", 0.0), 3),
-        "eff": round(sb.get("efficiency_score", 0.0) + sb.get("speed_bonus", 0.0), 3),
+        "outcome": round(float(sb.get("outcome", 0.0)), 3),
+        "valid": round(float(sb.get("action_validity", 0.0)), 3),
+        "fmt": round(min(env_format, runner_format), 3),
+        "anti": round(float(sb.get("anticheat", 0.0)), 3),
+        "eff": round(float(sb.get("efficiency", 0.0)), 3),
     }
 
 
 def _format_breakdown(b: dict[str, float]) -> str:
     return (
-        f"outcome={b['outcome']:.2f} valid={b['valid']:.2f} "
+        f"out={b['outcome']:.2f} valid={b['valid']:.2f} "
         f"fmt={b['fmt']:.2f} anti={b['anti']:.2f} eff={b['eff']:.2f}"
     )
 
@@ -302,7 +302,7 @@ async def stream_advanced_episode(
     The Advanced runner is sync; we drive it on a worker thread and tee its
     log lines into the streaming trace.
     """
-    from sre_gym.advanced.runner import run_advanced
+    from sre_gym.strategy.runner import run_advanced
     from sre_gym.ui.policies import make_policy
 
     start = time.time()
@@ -366,7 +366,7 @@ async def stream_max_episode(
     on_log: Callable[[str], None] | None = None,
 ) -> AsyncIterator[str]:
     """Run a Max episode via ``sre_gym.max.runner.run_max``."""
-    from sre_gym.max.runner import run_max
+    from sre_gym.operations.runner import run_max
     from sre_gym.ui.policies import make_policy
 
     start = time.time()

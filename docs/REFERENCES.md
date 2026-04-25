@@ -33,7 +33,7 @@ The scenario design in sre-gym is grounded in a corpus of real 2022–2026 produ
 
 ### Max-tier chaos library
 
-The 11 chaos patterns are listed and grounded individually in [`docs/MAX_TIER.md`](MAX_TIER.md) §3. Each pattern cites its real-world incident (Cloudflare Nov 2025, Railway Oct 2025, Vercel Apr 2026, Fly.io Oct 2024, etc.).
+The 11 chaos patterns are listed and grounded individually in [`docs/OPERATIONS_TIER.md`](MAX_TIER.md) §3. Each pattern cites its real-world incident (Cloudflare Nov 2025, Railway Oct 2025, Vercel Apr 2026, Fly.io Oct 2024, etc.).
 
 ---
 
@@ -82,7 +82,7 @@ The Basic-tier training pipeline integrates:
 
 - **Unsloth** for 4-bit / LoRA-friendly model loading (Qwen 2.5 3B)
 - **HuggingFace TRL** for the GRPO loop, group-relative advantages, KL-control
-- **OpenClaw-RL** pool-server pattern (`/allocate /reset /exec_tool /evaluate /close`) for async GRPO at training scale
+- **Lease-pool pattern** (`/allocate /reset /exec_tool /evaluate /close`) for parallel rollout under GRPO — implemented in [`coliseum/`](../coliseum/README.md)
 - **Wandb** for training-curve logging
 
 References:
@@ -90,7 +90,6 @@ References:
 - [Unsloth docs — Qwen2.5 LoRA](https://docs.unsloth.ai/get-started/all-our-models)
 - [TRL — GRPO trainer](https://huggingface.co/docs/trl/main/en/grpo_trainer)
 - [DeepMind GRPO paper](https://arxiv.org/abs/2402.03300)
-- [Gen-Verse/OpenClaw-RL](https://github.com/Gen-Verse/OpenClaw-RL)
 
 ---
 
@@ -162,7 +161,7 @@ If you have 15 minutes, add:
 
 If you have 45 minutes, add:
 
-7. `docs/BASIC_TIER.md` (full template + simulator + procgen detail)
-8. `docs/ADVANCED_TIER.md` + `docs/MAX_TIER.md` (the design space)
+7. `docs/TRIAGE_TIER.md` (full template + simulator + procgen detail)
+8. `docs/STRATEGY_TIER.md` + `docs/OPERATIONS_TIER.md` (the design space)
 9. `unified_incident_env/server/grader.py` (the actual rubric implementation)
 10. `unified_incident_env/server/environment.py` (the world simulator)

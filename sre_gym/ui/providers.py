@@ -5,12 +5,13 @@ returning the assistant text. Errors raise typed exceptions from
 ``sre_gym.exceptions`` so the UI can surface a redacted message rather than
 echoing the failing key.
 
-Four implementations:
+Five implementations:
 
 - ``HFInferenceProvider``     — Hugging Face Inference Router via OpenAI SDK
 - ``AnthropicProvider``       — anthropic.AsyncAnthropic
 - ``OpenAICompatibleProvider``— openai.AsyncOpenAI (covers OpenAI / Together /
                                 Fireworks / Groq / DeepSeek)
+- ``OllamaProvider``          — local Ollama daemon (no API key, no quota)
 - ``DummyProvider``           — offline test provider; returns canned tool calls
 
 Each also exposes ``chat_sync(...)`` for callers that want a sync surface
@@ -222,6 +223,78 @@ class OpenAICompatibleProvider:
                 temperature=kwargs.get("temperature", 0.0),
             )
         except Exception as exc:
+            return _classify_provider_exception(self.name, exc)
+        try:
+            return (resp.choices[0].message.content or "").strip()
+        except Exception as exc:  # pragma: no cover
+            raise ProviderModelError(self.name, f"unexpected response shape: {exc}") from exc
+
+    async def chat(self, messages: list[dict[str, str]], **kwargs: Any) -> str:
+        import asyncio
+        return await asyncio.to_thread(self.chat_sync, messages, **kwargs)
+
+
+# ---------------------------------------------------------------------------
+# OllamaProvider — local model via Ollama daemon.
+# ---------------------------------------------------------------------------
+
+
+class OllamaProvider:
+    """Routes chat completions through a local Ollama daemon.
+
+    Ollama exposes an OpenAI-compatible ``/v1/chat/completions`` surface at
+    ``http://localhost:11434/v1`` by default. There is no API key — the
+    daemon is unauthenticated on localhost.
+
+    Examples
+    --------
+    >>> OllamaProvider(model="llama3.2")
+    >>> OllamaProvider(model="qwen2.5:3b", base_url="http://my-rig:11434/v1")
+
+    Pull the model first: ``ollama pull llama3.2`` (or ``qwen2.5:3b``,
+    ``mistral``, etc). The provider does not auto-pull.
+    """
+
+    name = "ollama"
+
+    def __init__(self, model: str, base_url: str = "http://localhost:11434/v1") -> None:
+        if not model:
+            raise ProviderModelError(self.name, "model name required (e.g. 'llama3.2')")
+        if not base_url:
+            raise ProviderModelError(self.name, "base_url required")
+        self._base_url = base_url
+        self.model = model
+        self._client: Any = None
+
+    def _ensure_client(self) -> Any:
+        if self._client is not None:
+            return self._client
+        try:
+            from openai import OpenAI
+        except ImportError as exc:  # pragma: no cover
+            raise ProviderModelError(self.name, "openai SDK not installed") from exc
+        # Ollama ignores the api_key but the OpenAI SDK requires a non-empty
+        # value or it raises before sending the request.
+        self._client = OpenAI(base_url=self._base_url, api_key="ollama")
+        return self._client
+
+    def chat_sync(self, messages: list[dict[str, str]], **kwargs: Any) -> str:
+        client = self._ensure_client()
+        try:
+            resp = client.chat.completions.create(
+                model=self.model,
+                messages=messages,
+                max_tokens=kwargs.get("max_tokens", 256),
+                temperature=kwargs.get("temperature", 0.0),
+            )
+        except Exception as exc:
+            msg = str(exc).lower()
+            if "connection" in msg or "refused" in msg or "could not connect" in msg:
+                raise ProviderModelError(
+                    self.name,
+                    f"could not reach Ollama at {self._base_url} — is the daemon running? "
+                    f"Start it with `ollama serve` and pull the model with `ollama pull {self.model}`.",
+                ) from exc
             return _classify_provider_exception(self.name, exc)
         try:
             return (resp.choices[0].message.content or "").strip()

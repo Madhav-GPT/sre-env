@@ -274,6 +274,7 @@ class UnifiedIncidentState(State):
     slo_burn_rate: float = Field(ge=0.0, le=1.0)
     incident_resolved: bool = False
     containment_applied: bool = False
+    cause_removed: bool = False
     allowed_actions: list[str] = Field(default_factory=list)
     required_fields_by_action: dict[str, list[str]] = Field(default_factory=dict)
     valid_action_example: dict[str, Any] | None = None
@@ -285,6 +286,13 @@ class UnifiedIncidentState(State):
     last_action_result: str = ""
     failure_type: str | None = None
     why_failed: str | None = None
+    # 5-component rubric counters (consumed by UnifiedIncidentGrader).
+    action_counts: dict[str, int] = Field(default_factory=dict)
+    invalid_action_count: int = 0
+    query_actions_before_resolved: int = 0
+    hypothesis_submitted_at_tick: int | None = None
+    declare_resolved_called_at_tick: int | None = None
+    hypothesis_root_cause_correct: bool = False
 
 
 class ScenarioSummary(BaseModel):

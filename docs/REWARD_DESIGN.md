@@ -1,51 +1,49 @@
 # Reward design
 
-> Why the rubric is shaped, why the ceiling is hardened, and why the ≤ 0.80 baseline ceiling is a feature not a bug.
+> Why the rubric collapses to 5 components, why each component is shaped the way it is, and why the [0.65, 0.80] *heuristic* ceiling — distinct from the ≥0.90 scripted-expert reference — is the load-bearing GRPO invariant.
 
-This document explains the reward decisions across all three tiers. The Basic-tier rubric is implemented in [`unified_incident_env/server/grader.py`](../unified_incident_env/server/grader.py); the Advanced/Max rubrics extend it with horizon-specific and realism-specific dimensions documented in their respective tier docs.
-
----
-
-## 1. The core rubric (Basic tier, all 12 templates)
-
-```
-recovery_score        0.00 – 0.25      critical-path services healthy
-containment_score     0.00 – 0.15      root cause removed (0.15) or service isolated (0.10)
-verification_score    0.00 – 0.20      database_recovery (0.08) + end_to_end (0.12)
-impact_score          0.00 – 0.05      user-impact reduced from baseline
-efficiency_score      0.00 – 0.05      blast-radius budget preserved
-speed_bonus           0.00 – 0.10      finishing under optimal_ticks (conditional on full verification)
-noise_handling_score  0.00 – 0.05      penalizes querying distractor noise services
-                      ----
-total                 0.00 – 0.85      with public clamp to [0.01, 0.99]
-```
-
-Plus a per-tick *shaped* reward computed as the change in incident-health potential (see §3).
+This document explains the reward decisions for the Triage tier, which is the surface every tier inherits. The Triage rubric is implemented in [`unified_incident_env/server/grader.py`](../unified_incident_env/server/grader.py); the Strategy and Operations runners chain Triage episodes and decay their per-phase rewards over the horizon.
 
 ---
 
-## 2. The five-component decomposition, defended
+## 1. The 5-component rubric
 
-**Recovery (0.25)** is the highest-weighted dimension because it's the only one that's strictly necessary. An agent that doesn't restore service health doesn't matter how cleanly it executed everything else. The 0.25 cap is high enough that a partial recovery (degraded → degraded but better) earns partial credit, but not so high that an agent can ace recovery alone and skip verification.
+```
+outcome          0.45    root-cause action correct + recovery confirmed
+action_validity  0.20    fraction of step() actions that are well-formed
+format           0.10    submit_hypothesis was called before declare_resolved
+anticheat        0.15    declare_resolved blocked unless ≥1 query-action ran
+efficiency       0.10    exp(-current_tick / optimal_ticks_for_template)
+                 ----
+composite        1.00    public score, clamped to [0.01, 0.99]
+```
 
-**Containment (0.15)** rewards the *path* taken to get to recovery. A rollback that removes the cause earns 0.15; an isolation that reduces blast radius without removing the cause earns 0.10. Both are valid SRE moves, but the first is strictly better — and the rubric reflects that. The 0.05 gap is the price of choosing isolate-without-rollback as a permanent solution.
+Plus a per-tick *shaped* reward (the change in incident-health potential) computed inside `UnifiedIncidentEnvironment.step` — see §3.
 
-**Verification (0.20)** is split (0.08 + 0.12) so that the *end-to-end* check is worth more than the *database_recovery* check. End-to-end is the user-facing health gate. database_recovery is a per-component check that's necessary but not sufficient. An agent that runs only `database_recovery` and declares resolved leaves the gateway/worker path unverified — and the rubric penalizes that.
-
-**Impact (0.05)** is small on purpose. User-impact reduction *follows from* recovery; double-counting it would distort the rubric toward "make the user-impact number go down" rather than "fix the underlying fault". The 0.05 cap acknowledges that customer-impact-aware operators *should* feel rewarded for it, without letting it dominate.
-
-**Efficiency (0.05)** measures wasteful actions: redundant queries, repeated rollback attempts, isolating an already-isolated service. The 0.05 cap is again deliberate — being efficient matters, but not at the expense of being thorough. An agent that skips verification to save ticks scores worse on verification; an agent that double-queries doesn't lose much. The asymmetry is correct.
-
-The 5-component decomposition is also what makes this a *composable rubric* in the OpenEnv framework sense: each dimension is independently tunable, independently testable (one test per dimension), and independently extensible (the Advanced tier *adds* dimensions; it doesn't *replace* the Basic ones).
+The rubric is a Pydantic `RubricScore` model whose `composite` property bakes in the weights. Calling `compute_breakdown()` returns the five new keys plus zeroed legacy keys for any caller that still reads the 7-dim shape — see [`unified_incident_env/server/grader.py`](../unified_incident_env/server/grader.py).
 
 ---
 
-## 3. The shaped per-tick reward
+## 2. Why this rubric, not the previous 7-dim one
 
-The grader returns a final score in [0, 0.85] only at episode end. Per-tick rewards are computed differently — they're *shaped* by the change in **incident-health potential**:
+The earlier rubric (`recovery 0.25 + containment 0.15 + verification 0.20 + impact 0.05 + efficiency 0.05 + speed_bonus 0.10 + noise_handling 0.05`) summed to 0.85, was always quietly clamped, and double-counted causality:
+
+- `recovery` and `verification` both rewarded "the env reached a healthy state" — one via service-status weights, the other via the explicit `end_to_end` check. A successful resolve always lit both. The two dimensions were ~92% correlated across all 60 procgen variants, which flattened the GRPO advantage signal: trajectories that resolved cleanly clustered too tightly.
+- `impact` (0.05) was a deterministic function of `recovery` for every Triage scenario — the post-rollback impact targets are scenario constants. It contributed zero variance.
+- `speed_bonus` (0.10) only fired *conditional on full verification*, so it duplicated the verification gate.
+
+The 5-component rubric strips those overlaps. **Outcome (0.45)** is the fused recovery+verification+impact dimension — a single 0/0.5/1 ladder that asks one question: *did the agent fix the right thing and verify it?* All the per-component partial credit lives inside that ladder. **Efficiency (0.10)** stays. The other three components — **action_validity**, **format**, **anticheat** — are new, and §4 explains why each one is necessary.
+
+The composite now spans the full [0, 1] range without clamping; the public clamp to [0.01, 0.99] is just numerical hygiene at the API boundary.
+
+---
+
+## 3. The shaped per-tick reward (unchanged)
+
+The grader computes `composite` from terminal state. Per-tick rewards are still shaped by the change in **incident-health potential**, which is what gives GRPO dense intermediate signal:
 
 ```
-potential = 0.55 * sum(weight[s] * service_status_score[s]) for s in critical_services
+potential = 0.55 * sum(weight[s] * service_status_score[s])  for s in critical_services
           + 0.20 * (1 - user_impact)
           + 0.15 * (1 - slo_burn_rate)
           + 0.10 * containment_applied
@@ -56,124 +54,131 @@ per_tick_reward = -step_cost
                  - penalty_from_action
 ```
 
-This gives dense intermediate signal: a correct rollback raises `potential` because services move toward healthy and `containment_applied` flips True. A wrong rollback or premature restart leaves potential flat (and pays an explicit penalty). Restarting the wrong service penalizes; restarting the right service after rollback raises potential.
-
-**Why this matters for compute-bounded training.** Without dense shaping, GRPO at 800 steps on 60 scenarios doesn't converge in 12 hours of A100. We tested terminal-only rewards in early prototyping and watched the reward stay flat for 400+ steps before any signal emerged. With shaping, the reward starts climbing within the first 50 steps. The 12-hour budget is the design constraint; shaping is the technique that makes it feasible.
-
-The shaping is *potential-based*: shaping rewards form a telescoping sum that exactly equals the difference in terminal potential, so the optimal policy under shaped rewards is identical to the optimal policy under unshaped rewards (Ng et al. 1999). That's a non-trivial property: it means shaping doesn't change *what* we're optimizing, only *how fast* the gradient finds the optimum.
+A correct rollback raises `potential` because services move toward healthy and `containment_applied` flips True. A wrong rollback or premature restart leaves potential flat (and pays an explicit `unsafe_action_penalty`). The shaping is *potential-based* (Ng et al. 1999): the optimal policy under shaped rewards is identical to the optimal policy under unshaped rewards, but the gradient finds the optimum much faster — necessary for the 12-hour A100 GRPO budget.
 
 ---
 
-## 4. The hardened [0.70, 0.80] baseline ceiling band
+## 4. Why each new component is load-bearing
 
-A scripted-optimal baseline that follows the canonical action sequence for each template lands in the **[0.70, 0.80]** band across all 12 templates. The CI invariant `test_baseline_ceiling_is_hardened_below_080` enforces both edges of this band — any reward-config change that pushes the baseline above 0.80 (no headroom for trained agents) or below 0.70 (the scripted path doesn't even solve cleanly) is rejected. The 0.20-wide headroom from 0.80 → 1.0 is what GRPO trains *into*; the 0.10-wide floor from 0.70 → 0.80 is the scripted-vs-trained margin.
+**Outcome (0.45).** The single biggest weight, because it's the single thing that matters. A 0/0.5/1 ladder:
+- `1.0` — `cause_removed AND end_to_end` check passed. The incident is genuinely fixed.
+- `0.5` — agent submitted a hypothesis with the correct root cause but never remediated. *Diagnosis without action is half credit*: it shows the agent understands what's wrong without proving it can act.
+- `0.0` — neither remediated nor correctly diagnosed.
 
-Why? Because **the headroom 0.80 → 0.99 is what GRPO trains into**. The baseline can earn:
+The 0.5 step is what gives the [0.65, 0.80] heuristic ceiling its top edge (§5).
 
-- Full recovery (0.25)
-- Full containment (0.15)
-- Full verification (0.20)
-- Full impact (0.05)
-- Full efficiency (0.05)
-- *Zero* speed bonus (it spends `optimal_ticks` exactly, no faster)
-- Full noise handling (0.05) — the baseline avoids noise queries
-- Hypothesis bonus partial (~0.06 for a calibrated hypothesis with high confidence)
+**Action validity (0.20).** Computed as `(step_count - invalid_action_count) / step_count`. Pydantic catches malformed actions at the HTTP boundary, so reaching `step()` already implies a structurally valid action. This dimension fires on the env's `unsupported_action` failure path — actions whose type isn't part of the bounded action set. It rewards "did the agent figure out the protocol" without conflating that with semantic correctness.
 
-That sums to ~0.81, then clamps to 0.80. To exceed 0.80, an agent must:
+**Format (0.10).** A binary gate: `1.0` iff `submit_hypothesis` was called *before* `declare_resolved` (or `declare_resolved` was never called). This forces the agent to commit to a diagnosis before claiming victory — without it, an agent can shortcut by repeatedly trying `declare_resolved` and skipping the diagnosis step entirely.
 
-- Resolve in *fewer than* `optimal_ticks` (earns up to +0.10 speed bonus), AND
-- Land a perfectly-calibrated high-confidence hypothesis on first try (earns up to +0.06)
+**Anticheat (0.15).** `1.0` iff at least one `query_*` action ran before the *first* `declare_resolved` attempt. Blocks the cheapest possible cheat: `submit_hypothesis(any) → declare_resolved → done`. Note that `run_check` and `submit_hypothesis` *do not* count as evidence-gathering for this dimension — only the four golden-signal queries (`query_logs`, `query_metrics`, `query_dependencies`, `query_deploys`).
 
-A 3B specialist trained with GRPO learns to do both, because the dense shaping reward + group-relative advantages teach it which order of actions is fastest, and the explicit hypothesis-calibration reward teaches it to commit to a hypothesis with high confidence rather than hedge. Without the hardened ceiling, the env saturates at 0.85+ for a strong frontier model and there's no signal left to train against.
+**Efficiency (0.10).** `min(1.0, exp(-current_tick / optimal_ticks))`. Smooth, monotonic, no thresholds. A scripted-optimal solve at exactly `optimal_ticks` scores `e^-1 ≈ 0.37`. A trained agent that resolves in `0.5 * optimal_ticks` scores `e^-0.5 ≈ 0.61`. The exponential shape is deliberate: the marginal value of one fewer tick is highest at the start (where the agent must figure out what to do) and lowest at the end (where it's just running out the clock).
+
+The five components are independently testable, and `unified_incident_env/tests/test_environment.py` has one assertion per component covering the canonical fail/pass paths.
 
 ---
 
-## 5. Penalty structure
+## 5. The two ceiling bands
 
-Three negative-reward sources:
+The rubric has **two** reference scores, not one:
+
+### 5a. Heuristic ceiling: `[0.65, 0.80]`
+
+A naive heuristic that *gathers evidence + submits the correct hypothesis but never remediates* lands in this band. Enforced across all 12 templates by `test_heuristic_ceiling_is_in_band`. Composition:
+
+```
+0.45 * 0.5  (outcome — correct hypothesis, no remediation)
+0.20 * 1.0  (action_validity — all actions well-formed)
+0.10 * 1.0  (format — hypothesis before any resolve attempt)
+0.15 * 1.0  (anticheat — queries before any resolve attempt)
+0.10 * x    (efficiency — depends on tick count when episode evaluated)
+= 0.675 + 0.10 * x   →   in [0.675, 0.775] for x in [0, 1]
+```
+
+This is the ceiling a *non-trained* agent can hit by reading the action protocol carefully. **The 0.20 gap from 0.80 → 1.00 is the GRPO training target** — every percentage point above 0.80 represents a remediation step the heuristic doesn't take.
+
+### 5b. Scripted-expert reference: `≥ 0.90`
+
+The scripted-optimal baselines in `extra_baselines()` execute the canonical solve path: queries → hypothesis → rollback → run_check → declare_resolved. Under the new rubric they score in the [0.93, 0.95] band — `outcome=1.0`, `action_validity=1.0`, `format=1.0`, `anticheat=1.0`, and `efficiency=e^(-optimal_ticks/optimal_ticks)=0.37`. This is the *demonstration* shape: it shows the env is solvable cleanly, and it's what the SFT seed trajectories are derived from. Enforced by `test_round2_baseline_resolves` (≥0.90) and `test_baseline_resolves_honestly` family.
+
+A trained agent that beats the scripted baseline does so by trimming ticks — the only dimension with headroom once the other four are saturated.
+
+---
+
+## 6. Adversarial verification
+
+The previous rubric had no explicit anti-cheat dimension; the absence was caught by spot-checking trajectories. The 5-component rubric makes adversarial behavior *first-class*:
+
+| Cheat strategy | Blocked by | Mechanism |
+|---|---|---|
+| `declare_resolved` immediately | anticheat (0.15) | requires ≥1 query before first resolve attempt |
+| Skip `submit_hypothesis` to save a tick | format (0.10) | requires hypothesis before resolve |
+| Spam hypotheses to fish for partial credit | hypothesis idempotence | second identical hypothesis returns 0 reward |
+| Send malformed actions to flood the trace | action_validity (0.20) | invalid actions reduce the validity ratio |
+| `declare_resolved` before checks pass | outcome (0.45) | outcome=0.0 unless `cause_removed AND end_to_end` |
+| Restart the right service before rollback | shaped reward + `premature_restart` penalty | re-inherits bad state, pays explicit penalty |
+| Rollback the wrong service | shaped reward + `wrong_remediation_target` penalty | leaves cause in place, pays penalty, no outcome credit |
+
+Three of those (anticheat, format, action_validity) are *dimension-level* blocks: even if the rest of the rubric saturates, a cheating agent loses 0.45 of weight. The other four are step-penalty blocks inside `UnifiedIncidentEnvironment.step`.
+
+The `unsafe_action_penalty` referenced elsewhere is *not* a rubric component — it's an action-level step penalty applied during episode rollout. It surfaces in the per-tick reward but doesn't enter the composite. Conflating the two is a common mistake when reading the env.
+
+---
+
+## 7. Penalty structure (per-tick, not rubric)
 
 | Source | Magnitude | Triggers |
 |---|---|---|
-| `step_cost` | 0.01/tick | always (encourages efficiency) |
-| `unsafe_action_penalty` | 0.08 (medium) / 0.12 (hard) | rollback wrong service, isolate wrong service |
-| `premature_resolution_penalty` | 0.20 (medium) / 0.30 (hard) | `declare_resolved` before checks pass |
-| `low_value_restart` (half-strength) | 0.04 (medium) / 0.06 (hard) | restart wrong service |
-| `premature_restart` | 0.08 (medium) / 0.12 (hard) | restart correct service before cause removed |
+| `step_cost` | 0.01/tick | always (efficiency pressure) |
+| `unsafe_action_penalty` | 0.08 (medium) / 0.12 (hard) | rollback wrong service, isolate wrong service, unsupported action |
+| `premature_resolution_penalty` | 0.20 / 0.30 | `declare_resolved` before checks pass |
+| `low_value_restart` (half-strength) | 0.04 / 0.06 | restart wrong service |
+| `premature_restart` | 0.08 / 0.12 | restart correct service before cause removed |
 
 The asymmetry between `low_value_restart` (half-penalty) and `premature_restart` (full-penalty) reflects the SRE judgment that "restarting the right thing too early" is worse than "restarting the wrong thing" — restarting too early *re-inherits* the bad state and resets progress, while restarting the wrong thing is just wasted action.
 
 ---
 
-## 6. Hypothesis reward (anti-gaming)
+## 8. Hypothesis reward (per-tick, not rubric)
 
-`submit_hypothesis` is the action that scores the agent's *belief about the world*. It pays:
+`submit_hypothesis` pays an in-episode bonus on top of the rubric:
 
 - `0.04` for correct root_cause (RootCauseType match against scenario truth)
 - `0.03 × overlap` for affected_services overlap with truth
 - `0.03 × quality` for recommended_next_action quality (bonus if right, -0.4 if wrong)
 - `0.02 × calibration` for confidence calibration (bonus if confident-and-right, penalty if confident-and-wrong)
 
-Total: up to ~0.12 per scenario. Critically, `submit_hypothesis` is **idempotent**: a second identical hypothesis returns 0 reward. An agent that spams hypotheses to fish for partial credit gets one shot per unique hypothesis.
+Total: up to ~0.12 per scenario, accruing into `cumulative_reward` (visible in observations and the live UI). `submit_hypothesis` is **idempotent**: a second identical hypothesis returns 0 bonus. An agent that spams hypotheses to harvest partial credit gets one shot per unique hypothesis.
 
-Why this matters: in early prototyping a frontier-LLM agent gamed the reward by submitting 4 different hypotheses (one for each plausible cause) and harvesting partial credit on each. Idempotence kills that strategy.
+This bonus is separate from the rubric: a correct hypothesis lifts both the per-tick reward (via the bonus) *and* the terminal `outcome` dimension (because `hypothesis_root_cause_correct` flips True). The two pathways are deliberate — the per-tick bonus rewards the *moment* of insight, the rubric dimension rewards the *fact* of insight.
 
 ---
 
-## 7. The composable-rubric framework usage
+## 9. Cross-tier reward shape
 
-The grader is structured so each dimension is computed independently:
+The Strategy and Operations tiers reuse the Triage rubric; they don't introduce new rubric dimensions. What they *do* add is a **horizon decay** applied to per-phase composite scores:
 
-```python
-recovery_score        = compute_recovery(state, scenario)
-containment_score     = compute_containment(state, scenario)
-verification_score    = compute_verification(state, scenario)
-impact_score          = compute_impact(state, scenario)
-efficiency_score      = compute_efficiency(state, scenario)
-speed_bonus           = compute_speed_bonus(state, scenario)
-noise_handling_score  = compute_noise_handling(state, scenario)
-final_score           = sum_and_clamp(...)
+```
+strategy_final_reward = horizon_decay_factor * mean(per_phase_composite)
+operations_final_reward = horizon_decay_factor * mean(per_phase_composite)
 ```
 
-In OpenEnv-framework terms, this is the "composable rubric" pattern: each dimension is a small, testable, independently-tunable function. Adding the Advanced-tier `chained_incident_recognition` dimension is a 10-line patch — a new function, a new test, a new entry in the sum.
-
-The alternative (a monolithic LLM-as-judge scoring the entire trajectory) is *cheaper to build* but *more expensive to debug*: when the score is wrong, you can't tell which dimension is broken. The composable approach surfaces failures at the right granularity.
+`horizon_decay_factor ∈ [0, 1]` is computed by the runner from unresolved phases (Strategy) and chaos-pattern composition (Operations). The Triage rubric's properties — bounded composition, anti-cheat dimensions, smooth efficiency — all carry through. That's why the tier structure is a curriculum, not a benchmark substitution: a Triage-trained agent's `outcome` and `format` priors transfer directly into Strategy and Operations training.
 
 ---
 
-## 8. Cross-tier reward shape
+## 10. Test discipline
 
-| Dimension | Basic | Advanced | Max |
-|---|---|---|---|
-| Core 7-dim rubric | ✅ | inherits | inherits |
-| Hypothesis bonus | ✅ | ✅ | ✅ |
-| Shaped per-tick reward | ✅ | ✅ | ✅ |
-| `chained_incident_recognition` | — | ✅ | ✅ |
-| `alternate_observability_use` | — | ✅ | ✅ |
-| `pipeline_protection` | — | ✅ | ✅ |
-| `containment_first` | — | ✅ | ✅ |
-| `security_recognition` | — | ✅ | ✅ |
-| `data_leak_window_documented` | — | ✅ | ✅ |
-| `customer_comm_drafted` | — | ✅ | ✅ |
-| `postmortem_quality` (rubric) | — | ✅ | — |
-| `postmortem_quality` (learned critic) | — | — | ✅ |
-| `actual_recovery_state` (binary) | — | — | ✅ |
-| `revenue_lost_during_outage` | — | — | ✅ |
-| `iac_remediation_applied` | — | — | ✅ |
-| `runbook_update` | — | — | ✅ |
-| `mttr` | — | — | ✅ |
-| Outcome-scored | — | — | ✅ |
+| Test | Asserts |
+|---|---|
+| `test_heuristic_ceiling_is_in_band` | naive heuristic in [0.65, 0.80] across all 12 templates |
+| `test_round2_baseline_resolves` | scripted-optimal ≥ 0.90 across the 6 round-2 templates |
+| `test_baseline_resolves_honestly` family | scripted-optimal resolves cleanly (incident_resolved=True, both checks pass) |
+| `test_fast_solve_beats_scripted_baseline` | a 6-step correct solve scores above the 10-step scripted baseline |
+| `test_declare_resolved_requires_checks` | premature resolve fires `premature_resolution` failure path |
+| `test_duplicate_hypothesis_bonus_is_not_farmable` | hypothesis-spam blocked by idempotence |
+| `test_blast_radius_increments_on_mitigations` | per-tick blast-radius counter is honest |
+| `test_fast_solve_beats_scripted_baseline` | a faster correct solve outscores the 10-tick baseline via the efficiency dim |
 
-The reward shape *grows* monotonically across tiers — each tier strictly contains the previous tier's signals plus tier-specific additions. That means a model trained at Basic carries useful priors into Advanced training; an Advanced model carries useful priors into Max training. The tier escalation is a curriculum, not a benchmark substitution.
-
----
-
-## 9. Test discipline
-
-Every dimension has a corresponding test in `unified_incident_env/tests/`. The tests verify:
-
-- The dimension is *independently zero* under appropriate conditions (e.g. `verification_score=0` when no checks have run)
-- The dimension is *bounded* by its declared range (no off-by-one overflow)
-- The dimension *reaches its cap* on at least one canonical trajectory (no dead-code dimensions)
-- The CI invariant `baseline_ceiling ≤ 0.80` holds across all 12 templates
-
-Adding a new dimension requires adding a test for each of those four properties. That's the cost of the composable-rubric design — and it's a cost we pay willingly because it's what makes the rubric debuggable.
+Each rubric component has an end-to-end assertion; each adversarial cheat has a regression test. Adding a sixth rubric component would require: extending `RubricScore`, updating `composite` weight math to re-sum to 1.0, adding a test for both the cap and the floor, and updating the heuristic-ceiling math. That's the cost of the composable-rubric design — and it's deliberate.

@@ -77,7 +77,7 @@ class SREGym:
         if self.tier is Tier.BASIC and self._delegate is not None:
             return self._delegate.reset(**kwargs)
         if self.tier is Tier.MAX:
-            from sre_gym.max.runner import MaxRunnerEnv
+            from sre_gym.operations.runner import MaxRunnerEnv
 
             self._delegate = MaxRunnerEnv(family_id=kwargs.get("family_id", "ecommerce_vibecoded_saas"))
             chaos = kwargs.get("chaos") or "deploy_regression"
@@ -132,11 +132,11 @@ class SREGym:
 
             return run_basic(scenario_id, policy=policy, seed=seed, on_log=on_log)
         if self.tier is Tier.ADVANCED:
-            from sre_gym.advanced.runner import run_advanced
+            from sre_gym.strategy.runner import run_advanced
 
             return run_advanced(scenario_id, policy=policy, seed=seed, on_log=on_log)
         if self.tier is Tier.MAX:
-            from sre_gym.max.runner import run_max
+            from sre_gym.operations.runner import run_max
 
             chaos = kwargs.get("chaos") or "deploy_regression"
             return run_max(scenario_id, chaos=chaos, policy=policy, seed=seed, on_log=on_log)

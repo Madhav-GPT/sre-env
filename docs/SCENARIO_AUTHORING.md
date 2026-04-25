@@ -75,7 +75,7 @@ That's it. Procedural generation picks up the new template automatically (5 proc
 
 ## 2. Adding an Advanced-tier reference scenario (the 90-minute path)
 
-Drop a new YAML file in `sre_gym/advanced/scenarios/` matching the schema in [`docs/ADVANCED_TIER.md`](ADVANCED_TIER.md) §2. Required sections:
+Drop a new YAML file in `sre_gym/advanced/scenarios/` matching the schema in [`docs/STRATEGY_TIER.md`](ADVANCED_TIER.md) §2. Required sections:
 
 - `id` / `tier: advanced` / `difficulty` / `name` / `description`
 - `topology` — 15–20 services with `id`, `kind`, `owner`
@@ -104,7 +104,7 @@ A Max family is a triplet of YAML files:
 2. `sre_gym/max/chaos/<family_id>_chaos_library.yaml` — composable chaos patterns
 3. `sre_gym/max/compose/<family_id>.yaml` — docker-compose stack for the topology
 
-The schema is documented in [`docs/MAX_TIER.md`](MAX_TIER.md) §2-§4 and concretely demonstrated in `ecommerce_vibecoded_saas`. Required design moves:
+The schema is documented in [`docs/OPERATIONS_TIER.md`](MAX_TIER.md) §2-§4 and concretely demonstrated in `ecommerce_vibecoded_saas`. Required design moves:
 
 - **Pick a domain narrowly.** "E-commerce SaaS" is a topology; "general SaaS" is not. The chaos library, action set, and reward model all key off the domain shape.
 - **Stub external dependencies.** Don't wire to real Stripe/Supabase; build stub servers with fault-injection toggles via env vars. This is what makes the Max tier *runnable in a sandboxed cluster* rather than dependent on third-party API quotas.
@@ -145,16 +145,16 @@ For a new Basic template to ship:
 - [ ] `python -m openenv.cli validate .` passes
 - [ ] Scenario shows up at `GET /tasks` with all 5 procgen variants
 - [ ] `train/data/` includes at least 3 trajectories of teacher-driven solves on the new template
-- [ ] [`docs/BASIC_TIER.md`](BASIC_TIER.md) §1 table updated with the new template + skill description
+- [ ] [`docs/TRIAGE_TIER.md`](BASIC_TIER.md) §1 table updated with the new template + skill description
 
 For a new Advanced reference scenario:
 
 - [ ] YAML file in `sre_gym/advanced/scenarios/`
 - [ ] Loadable via `SREGym(tier=Tier.ADVANCED).list_scenarios()`
-- [ ] [`docs/ADVANCED_TIER.md`](ADVANCED_TIER.md) §2 updated with one paragraph describing the scenario and what it tests
+- [ ] [`docs/STRATEGY_TIER.md`](ADVANCED_TIER.md) §2 updated with one paragraph describing the scenario and what it tests
 
 For a new Max family:
 
 - [ ] Triplet of YAML files in `sre_gym/max/{families,chaos,compose}/`
 - [ ] Loadable via `SREGym(tier=Tier.MAX).list_scenarios()`
-- [ ] [`docs/MAX_TIER.md`](MAX_TIER.md) §2-4 updated with the family description, chaos patterns table, and operator notes
+- [ ] [`docs/OPERATIONS_TIER.md`](MAX_TIER.md) §2-4 updated with the family description, chaos patterns table, and operator notes

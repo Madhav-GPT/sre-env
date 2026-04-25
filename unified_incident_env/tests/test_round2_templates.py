@@ -1,11 +1,13 @@
-"""Smoke tests for the 6 round-2 Basic-tier templates added for the OpenEnv hackathon.
+"""Smoke tests for the 6 round-2 Triage-tier templates added for the OpenEnv hackathon.
 
 Each template must:
 1. Resolve cleanly via its scripted-optimal baseline.
-2. Score in the 0.70-0.80 band (not below — that means the baseline is bad;
-   not above — that means the rubric is leaking and the trained-agent
-   headroom is gone).
-3. Carry at least one noise service so the noise_handling_score dimension is alive.
+2. Score >= 0.90 under the 5-component rubric (a clean expert-reference solve
+   maximises outcome=1.0, action_validity=1.0, format=1.0, anticheat=1.0 and
+   only loses headroom on efficiency). Below 0.90 means the baseline is
+   missing a dimension — calibration bug.
+3. Carry at least one noise service so the noise-handling assertion in
+   ``test_round2_template_has_noise_services`` exercises the noise pool.
 4. Have all five procgen variants resolvable via the same baseline structure.
 5. Reject wrong-target rollbacks with the documented failure_type.
 """
@@ -48,9 +50,10 @@ def test_round2_baseline_resolves(template_id: str) -> None:
         f"{template_id}: baseline failed to resolve (failure_type={obs.failure_type}, "
         f"why={obs.why_failed})"
     )
-    assert 0.70 <= obs.final_score <= 0.80, (
+    assert obs.final_score >= 0.90, (
         f"{template_id}: baseline scored {obs.final_score:.3f} "
-        f"(must be in [0.70, 0.80] — see docs/REWARD_DESIGN.md)"
+        f"(scripted-optimal must be >= 0.90 under the 5-component rubric — "
+        f"see docs/REWARD_DESIGN.md)"
     )
 
 
@@ -73,8 +76,8 @@ def test_round2_procgen_variants_resolve(template_id: str) -> None:
         assert obs.incident_resolved is True, (
             f"{vid}: procgen variant failed to resolve"
         )
-        assert obs.final_score >= 0.70, (
-            f"{vid}: procgen variant scored {obs.final_score:.3f} (must be >= 0.70)"
+        assert obs.final_score >= 0.90, (
+            f"{vid}: procgen variant scored {obs.final_score:.3f} (must be >= 0.90)"
         )
 
 

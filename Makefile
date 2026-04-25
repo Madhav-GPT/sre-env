@@ -1,8 +1,8 @@
-.PHONY: install dev test test-tier1 test-wrapper baseline scripted-baseline tier-info walkthrough trainer-eval trainer-dataset trainer-session docker-build docker-run validate clean
+.PHONY: install dev test test-tier1 test-wrapper baseline scripted-baseline tier-info walkthrough trainer-eval trainer-dataset trainer-session docker-build docker-run validate clean build-corpus collect-sonnet train-notebook
 
 install:
 	python3 -m pip install -e ".[dev]"
-	@echo "Dependencies installed (sre-engineer-llm 3.1.0 — Basic tier runnable, Advanced/Max runnable as Python orchestrators with design-spec YAMLs)"
+	@echo "Dependencies installed (sre-engineer-llm 3.1.0 — Triage tier runnable as live HTTP env, Strategy/Operations runnable as Python orchestrators)"
 
 install-train:
 	python3 -m pip install -e ".[dev,train]"
@@ -54,3 +54,15 @@ validate:
 clean:
 	rm -rf outputs __pycache__ .pytest_cache
 	find . -name "*.pyc" -delete
+
+build-corpus:
+	python train/build_corpus.py --output train/data/seed_v2_120.jsonl
+
+collect-sonnet:
+	@test -n "$$ANTHROPIC_API_KEY" || (echo "set ANTHROPIC_API_KEY first" && exit 1)
+	@curl -sf http://127.0.0.1:8000/health > /dev/null || (echo "start the env first: make dev" && exit 1)
+	python train/collect_sonnet_missing6.py --output train/data/sonnet_missing6.jsonl
+
+train-notebook:
+	@which jupytext > /dev/null || (echo "pip install jupytext" && exit 1)
+	jupytext --to ipynb notebooks/01_triage_train_grpo.py

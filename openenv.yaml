@@ -2,22 +2,26 @@ name: sre-engineer-llm
 version: 3.1.0
 description: >
   Tier-escalating SRE training environment. Three tiers escalate three
-  different dimensions: Basic (compute), Advanced (horizon), Max (realism).
+  different dimensions: Triage (compute), Strategy (horizon), Operations
+  (realism).
 
-  Basic ships 12 templates x 6 entries each (1 base + 5 procgen variants) =
-  72 deterministic scenarios over a 4-service topology, with a hardened
-  scripted-optimal ceiling of <=0.80.
+  Triage ships 12 templates x 6 entries each (1 base + 5 procgen variants) =
+  72 deterministic scenarios over a 4-service topology. The 5-component
+  rubric (outcome 0.45 + action_validity 0.20 + format 0.10 + anticheat
+  0.15 + efficiency 0.10) sums to exactly 1.0 and pins a heuristic ceiling
+  of [0.65, 0.80] with a scripted-optimal reference at >=0.90.
 
-  Advanced runs as a Python orchestrator that chains Basic episodes with
+  Strategy runs as a Python orchestrator that chains Triage episodes with
   persistent horizon state (unresolved alerts, pending deploys, tech-debt
   counter, horizon-decay reward). It does not simulate a 15-20 service
   topology faithfully -- the YAMLs declare a richer action set as a design
   spec only.
 
-  Max runs as a Python state-machine simulator over a 22-node service graph
-  using the same 11-action interface as Basic. The docker-compose stack
-  under sre_gym/max/families/ references stub images that are not published;
-  it is shipped as design spec, not as runnable infrastructure.
+  Operations runs as a Python state-machine simulator over a 22-node service
+  graph using the same 11-action interface as Triage. The docker-compose
+  stack under sre_gym/operations/families/ references stub images that are
+  not published; it is shipped as design spec, not as runnable
+  infrastructure.
 
   Training is not committed to this repo. See notebooks/01 for the GRPO
   pipeline that needs to be executed externally (Colab A100). The README
@@ -41,52 +45,66 @@ environment:
   scenario_templates: 12
   procgen_variants_per_template: 5       # 5 variants per template; 6 entries total each
   deterministic_seeded: true
-  tier: basic                            # the runnable surface served by this Space
+  tier: triage                           # the runnable surface served by this Space
   tier_escalation_dimension: compute     # see docs/ARCHITECTURE.md for full design
 
 tiers:
-  basic:
+  triage:
     runnable: true
     runnable_kind: live_environment       # real /reset + /step routes against the live env
     escalation_dimension: compute
     persona: "ML student / Kaggle, $30 of HF credits"
     scenario_count: 72
+    docs: docs/TRIAGE_TIER.md
     notes: "12 base templates + 5 procgen variants each = 72 deterministic scenarios."
-  advanced:
+  strategy:
     runnable: true
-    runnable_kind: python_orchestrator    # chained Basic episodes with horizon state
+    runnable_kind: python_orchestrator    # chained Triage episodes with horizon state
     escalation_dimension: horizon
     persona: "seed/Series A startup, $300-500 budget"
     scenario_count: 3
-    docs: docs/ADVANCED_TIER.md
+    docs: docs/STRATEGY_TIER.md
     notes: >
-      Advanced runs each scenario as a sequence of Basic episodes glued
+      Strategy runs each scenario as a sequence of Triage episodes glued
       together by the horizon-state object (unresolved alerts, pending
       deploys, tech-debt counter, horizon-decay reward). It is NOT a
       simulator of a 15-20 service topology; the wider action universe
       declared in the YAMLs (~28 actions / scenario) is design spec
       only and is not implemented in the env.
-  max:
+  operations:
     runnable: true
     runnable_kind: python_simulator       # graph state machine, not real cluster
     escalation_dimension: realism
     persona: "enterprise SRE platform, 8x A100/H100"
     scenario_count: 1                     # one specced family
     chaos_pattern_count: 12               # includes one alias (payment_webhook_storm)
-    docs: docs/MAX_TIER.md
+    docs: docs/OPERATIONS_TIER.md
     notes: >
-      Max runs as an in-memory 22-node graph mutator. Reuses the Basic
-      11-action interface; correct_action across patterns is heavily
-      skewed toward rollback_deploy (11/12) so the patterns are
-      separable on observation alone -- not a hidden-information
-      benchmark. The compose file under sre_gym/max/families/ references
-      stub images that are NOT published; do not attempt `docker compose
-      up` expecting it to pull successfully.
+      Operations runs as an in-memory 22-node graph mutator. Reuses the
+      Triage 11-action interface; correct_action across patterns is heavily
+      skewed toward rollback_deploy (11/12) so the patterns are separable
+      on observation alone -- not a hidden-information benchmark. The
+      compose file under sre_gym/operations/families/ references stub
+      images that are NOT published; do not attempt `docker compose up`
+      expecting it to pull successfully.
+
+reward:
+  rubric_components:
+    outcome: 0.45
+    action_validity: 0.20
+    format: 0.10
+    anticheat: 0.15
+    efficiency: 0.10
+  composite_total: 1.0
+  heuristic_ceiling_band: [0.65, 0.80]
+  scripted_expert_floor: 0.90
+  docs: docs/REWARD_DESIGN.md
 
 training:
   status: pending
   pipeline: notebooks/01_basic_train_grpo_unsloth.ipynb
   comparison: notebooks/02_basic_eval_comparison.ipynb
+  pool_server: coliseum/                  # parallel-rollout lease pool for GRPO trainers
   expected_artifacts:
     - eval/results/comparison_hero.png
     - dakshdoesdev/sre-gym-qwen25-3b-grpo  (HF Hub adapter)

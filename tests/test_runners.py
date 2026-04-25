@@ -15,12 +15,12 @@ from __future__ import annotations
 
 import pytest
 
-from sre_gym.advanced.runner import (
+from sre_gym.strategy.runner import (
     AdvancedResult,
     list_advanced_scenarios,
     run_advanced,
 )
-from sre_gym.max.runner import (
+from sre_gym.operations.runner import (
     CHAOS_PATTERNS,
     MaxResult,
     list_max_families,
@@ -111,7 +111,7 @@ def test_max_security_classified_chaos_carries_classification() -> None:
 def test_max_per_step_env_returns_observation_on_reset() -> None:
     """The MaxRunnerEnv (used by SREGym(tier=Tier.MAX).reset/step) returns a
     valid observation."""
-    from sre_gym.max.runner import MaxRunnerEnv
+    from sre_gym.operations.runner import MaxRunnerEnv
 
     env = MaxRunnerEnv(family_id="ecommerce_vibecoded_saas")
     obs = env.reset(chaos="deploy_regression", seed=1)
@@ -122,7 +122,7 @@ def test_max_per_step_env_returns_observation_on_reset() -> None:
 
 
 def test_max_per_step_env_steps() -> None:
-    from sre_gym.max.runner import MaxRunnerEnv
+    from sre_gym.operations.runner import MaxRunnerEnv
 
     env = MaxRunnerEnv()
     env.reset(chaos="deploy_regression", seed=1)

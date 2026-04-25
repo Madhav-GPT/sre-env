@@ -1,14 +1,14 @@
-"""Advanced tier — horizon-bounded scenarios.
+"""Deprecated alias for ``sre_gym.strategy``.
 
-Three reference scenarios are shipped here as YAML specs.  They are *not*
-runnable in this repo — the Advanced tier is documented as a roadmap (see
-``docs/ADVANCED_TIER.md``) — but the YAML is real, structured, and can be
-loaded via ``SREGym(tier=Tier.ADVANCED).list_scenarios()`` for inspection.
-
-Why YAML and not Python dicts? Two reasons:
-
-1. The Advanced tier has 15-20 service topologies, expanded action sets, and
-   multi-incident chains. Encoding those as Python literals reads like noise.
-2. Future scenario authors should never have to touch Python to add an
-   Advanced scenario — see ``docs/SCENARIO_AUTHORING.md``.
+This module re-exports everything from ``sre_gym.strategy`` so legacy
+``import sre_gym.advanced`` callers keep working. Removal: v3.2.
 """
+from __future__ import annotations
+import warnings as _warnings
+
+_warnings.warn(
+    "sre_gym.advanced is deprecated; import from sre_gym.strategy",
+    DeprecationWarning,
+    stacklevel=2,
+)
+from sre_gym.strategy import *  # noqa: F401,F403,E402

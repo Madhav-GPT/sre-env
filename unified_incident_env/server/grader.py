@@ -1,8 +1,29 @@
-"""Deterministic public scoring for the honest narrow incident-remediation environment."""
+"""5-component rubric grader for the sre-gym Triage tier.
+
+The earlier 7-dim grader (recovery / containment / verification / impact /
+efficiency / speed_bonus / noise_handling) summed to 0.85 and flattened the
+GRPO advantage signal. This grader collapses to 5 components that sum to
+exactly 1.0 and surfaces an explicit anti-cheat dimension:
+
+    outcome          0.45    root-cause action correct + recovery confirmed
+    action_validity  0.20    fraction of actions that are valid + correctly typed
+    format           0.10    submit_hypothesis was called before declare_resolved
+    anticheat        0.15    declare_resolved blocked unless ≥1 query-action ran
+    efficiency       0.10    exp(-steps_used / steps_optimal_for_template)
+                     ----
+    composite        1.00
+
+The ``unsafe_action_penalty`` referenced elsewhere is an action-level *step
+penalty* applied inside ``UnifiedIncidentEnvironment.step``; it is NOT a
+rubric component. See ``docs/REWARD_DESIGN.md`` for the full rationale.
+"""
 
 from __future__ import annotations
 
+import math
 from typing import Any
+
+from pydantic import BaseModel, ConfigDict, Field
 
 from ..models import GraderCheck, GraderReport
 
@@ -10,194 +31,208 @@ MIN_PUBLIC_SCORE = 0.01
 MAX_PUBLIC_SCORE = 0.99
 
 
+class RubricScore(BaseModel):
+    """The 5-component rubric. Weights are baked into ``composite``."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    outcome: float = Field(..., ge=0.0, le=1.0)
+    action_validity: float = Field(..., ge=0.0, le=1.0)
+    format: float = Field(..., ge=0.0, le=1.0)
+    anticheat: float = Field(..., ge=0.0, le=1.0)
+    efficiency: float = Field(..., ge=0.0, le=1.0)
+
+    @property
+    def composite(self) -> float:
+        return round(
+            0.45 * self.outcome
+            + 0.20 * self.action_validity
+            + 0.10 * self.format
+            + 0.15 * self.anticheat
+            + 0.10 * self.efficiency,
+            4,
+        )
+
+    def as_dict(self) -> dict[str, float]:
+        return {
+            "outcome": round(self.outcome, 4),
+            "action_validity": round(self.action_validity, 4),
+            "format": round(self.format, 4),
+            "anticheat": round(self.anticheat, 4),
+            "efficiency": round(self.efficiency, 4),
+        }
+
+
 def _strict_public_score(score: float) -> float:
     return round(min(MAX_PUBLIC_SCORE, max(MIN_PUBLIC_SCORE, score)), 4)
 
 
-def _service_score(status: str) -> float:
-    return {
-        "healthy": 1.0,
-        "degraded": 0.4,
-        "crashed": 0.0,
-        "isolated": 0.2,
-    }.get(status, 0.0)
+# Action families used by the anticheat dimension. Anything not in this set
+# does NOT count as "earning" the anticheat dimension — even run_check and
+# submit_hypothesis don't, because they're not evidence-gathering on the
+# four golden signals.
+_QUERY_ACTIONS = {"query_logs", "query_metrics", "query_dependencies", "query_deploys"}
 
 
 class UnifiedIncidentGrader:
-    """Deterministic scorer focused on executed effects, not scripted clues.
+    """Computes the 5-component rubric from the env's per-step state.
 
-    Hardened schedule (post Track-A headroom patch):
+    The env is responsible for emitting these state fields — see
+    ``unified_incident_env/server/environment.py``:
 
-    - recovery       0.00 – 0.25
-    - containment    0.00 – 0.15
-    - verification   0.00 – 0.20
-    - impact         0.00 – 0.05
-    - efficiency     0.00 – 0.05
-    - speed_bonus    0.00 – 0.10    (positive only when faster than optimal)
-    - noise_handling 0.00 – 0.05    (penalizes querying noise services)
-
-    Scripted deterministic baseline (which matches optimal_ticks exactly and
-    avoids noise queries) caps at ~0.70. Headroom 0.70 → 0.85 is reachable only
-    by an agent that (a) is strictly faster than optimal and (b) touches zero
-    noise services. That's the training target.
+      action_counts                — dict[action_type, int]
+      invalid_action_count         — int (unsupported / unknown actions)
+      query_actions_before_resolved — int  (sum of query_* before declare_resolved)
+      hypothesis_submitted_at_tick — int | None
+      declare_resolved_called_at_tick — int | None
+      cause_removed                — bool
+      hypothesis_root_cause_correct — bool
+      step_count                   — int
+      current_tick                 — int
+      checks                       — list[CheckResult]
+      incident_resolved            — bool
     """
+
+    def compute_rubric(
+        self,
+        state: dict[str, Any],
+        scenario: dict[str, Any],
+    ) -> RubricScore:
+        # ---- outcome ----
+        cause_removed = bool(state.get("cause_removed"))
+        checks = {item.get("name"): bool(item.get("passed")) for item in state.get("checks", [])}
+        end_to_end_passed = checks.get("end_to_end", False)
+        hypothesis_correct = bool(state.get("hypothesis_root_cause_correct"))
+        if cause_removed and end_to_end_passed:
+            outcome = 1.0
+        elif hypothesis_correct and not cause_removed:
+            outcome = 0.5
+        else:
+            outcome = 0.0
+
+        # ---- action_validity ----
+        step_count = int(state.get("step_count", 0))
+        invalid = int(state.get("invalid_action_count", 0))
+        action_validity = 0.0
+        if step_count > 0:
+            action_validity = max(0.0, (step_count - invalid) / step_count)
+
+        # ---- format ----
+        hypo_at = state.get("hypothesis_submitted_at_tick")
+        resolve_at = state.get("declare_resolved_called_at_tick")
+        if hypo_at is None:
+            fmt = 0.0
+        elif resolve_at is None:
+            # Hypothesis was submitted, declare_resolved never called — that's
+            # still 1.0 for format because the order constraint is satisfied
+            # vacuously. (The outcome dimension penalises non-resolution.)
+            fmt = 1.0
+        else:
+            fmt = 1.0 if hypo_at < resolve_at else 0.0
+
+        # ---- anticheat ----
+        # 1.0 iff at least one query_* action ran before the FIRST
+        # declare_resolved attempt. Blocks shortcut-resolve attempts.
+        queries_before = int(state.get("query_actions_before_resolved", 0))
+        anticheat = 1.0 if queries_before >= 1 else 0.0
+
+        # ---- efficiency ----
+        steps_used = int(state.get("current_tick", 0))
+        steps_optimal = max(1, int(scenario.get("optimal_ticks", 10)))
+        efficiency = min(1.0, math.exp(-steps_used / steps_optimal))
+
+        return RubricScore(
+            outcome=outcome,
+            action_validity=action_validity,
+            format=fmt,
+            anticheat=anticheat,
+            efficiency=efficiency,
+        )
 
     def compute_breakdown(
         self,
         state: dict[str, Any],
         scenario: dict[str, Any],
     ) -> dict[str, float]:
-        services = state.get("service_health", {})
-        weights = scenario["critical_service_weights"]
-        recovery_raw = sum(
-            weights.get(service, 0.0) * _service_score((services.get(service) or {}).get("status", "crashed"))
-            for service in weights
-        )
-        recovery_score = round(0.25 * recovery_raw, 4)
+        """Backwards-compatible breakdown dict used by the env's observation.
 
-        contained = bool(state.get("containment_applied"))
-        rollback_target = scenario.get("remediation_recipe", {}).get("rollback_target")
-        rollback_service_healthy = bool(
-            rollback_target and (services.get(rollback_target) or {}).get("status") == "healthy"
-        )
-        if contained and rollback_service_healthy:
-            containment_score = 0.15
-        elif contained:
-            containment_score = 0.10
-        else:
-            containment_score = 0.0
-
-        checks = {item.get("name"): bool(item.get("passed")) for item in state.get("checks", [])}
-        verification_score = 0.0
-        if checks.get("database_recovery"):
-            verification_score += 0.08
-        if checks.get("end_to_end"):
-            verification_score += 0.12
-
-        user_impact = float(state.get("user_impact", 1.0))
-        impact_score = round(max(0.0, 0.05 * (1.0 - user_impact)), 4)
-
-        wasteful_ticks = int(state.get("wasteful_ticks", 0))
-        efficiency_score = round(max(0.0, 0.05 - (0.005 * wasteful_ticks)), 4)
-
-        # speed_bonus: fully earned only if the agent finishes well under optimal_ticks.
-        optimal_ticks = int(scenario.get("optimal_ticks", 10))
-        current_tick = int(state.get("current_tick", 0))
-        incident_resolved = bool(state.get("incident_resolved"))
-        if incident_resolved and current_tick > 0 and current_tick < optimal_ticks:
-            speed_bonus = round(0.10 * (optimal_ticks - current_tick) / optimal_ticks, 4)
-        elif incident_resolved and current_tick == optimal_ticks:
-            speed_bonus = 0.0
-        else:
-            speed_bonus = 0.0
-
-        # noise_handling: deduct per query against a noise service, up to the cap of 0.05.
-        noise_services = set(scenario.get("difficulty_knobs", {}).get("noise_services", []))
-        noise_queries = int(state.get("noise_queries", 0))
-        if noise_services:
-            noise_handling_score = round(max(0.0, 0.05 - 0.015 * noise_queries), 4)
-        else:
-            noise_handling_score = 0.0
-
-        final_score = _strict_public_score(
-            recovery_score
-            + containment_score
-            + verification_score
-            + impact_score
-            + efficiency_score
-            + speed_bonus
-            + noise_handling_score
-        )
-
-        return {
-            "recovery_score": recovery_score,
-            "containment_score": round(containment_score, 4),
-            "verification_score": round(verification_score, 4),
-            "impact_score": impact_score,
-            "efficiency_score": efficiency_score,
-            "speed_bonus": speed_bonus,
-            "noise_handling_score": noise_handling_score,
-            "final_score": final_score,
-        }
+        The new keys (outcome/action_validity/format/anticheat/efficiency)
+        are the canonical surface; the legacy 7-dim keys are retained as
+        zeroed compatibility values so any caller that still reads the old
+        shape doesn't crash. ``final_score`` is the composite under the new
+        rubric.
+        """
+        rubric = self.compute_rubric(state, scenario)
+        composite = rubric.composite
+        out = rubric.as_dict()
+        out.update({
+            "final_score": _strict_public_score(composite),
+            # Legacy keys kept at 0.0 so existing callers / tests can still read them.
+            "recovery_score": 0.0,
+            "containment_score": 0.0,
+            "verification_score": 0.0,
+            "impact_score": 0.0,
+            "efficiency_score": 0.0,
+            "speed_bonus": 0.0,
+            "noise_handling_score": 0.0,
+        })
+        return out
 
     def build_report(self, state: dict[str, Any], scenario: dict[str, Any]) -> GraderReport:
+        rubric = self.compute_rubric(state, scenario)
         breakdown = self.compute_breakdown(state, scenario)
-        checks = {item.get("name"): bool(item.get("passed")) for item in state.get("checks", [])}
-        passed = bool(
-            state.get("incident_resolved")
-            and checks.get("database_recovery")
-            and checks.get("end_to_end")
-        )
+        passed = rubric.outcome >= 1.0
         report_checks = [
             GraderCheck(
-                name="root_cause_removed",
-                passed=bool(state.get("containment_applied")),
+                name="outcome",
+                passed=rubric.outcome >= 1.0,
                 detail=(
-                    "The root cause has been safely contained or removed."
-                    if state.get("containment_applied")
-                    else "The root cause is still active or only partially contained."
+                    "Root cause was correctly remediated and verified."
+                    if rubric.outcome >= 1.0
+                    else (
+                        "Root cause identified but no successful remediation."
+                        if rubric.outcome >= 0.5
+                        else "Root cause not removed; recovery not verified."
+                    )
+                ),
+                weight=0.45,
+            ),
+            GraderCheck(
+                name="action_validity",
+                passed=rubric.action_validity >= 0.9,
+                detail=(
+                    f"{rubric.action_validity:.2%} of actions were structurally valid."
                 ),
                 weight=0.20,
             ),
             GraderCheck(
-                name="database_recovery",
-                passed=checks.get("database_recovery", False),
+                name="format",
+                passed=rubric.format >= 1.0,
                 detail=(
-                    "The database recovery check passed."
-                    if checks.get("database_recovery")
-                    else "The database recovery check has not passed yet."
+                    "submit_hypothesis was called before declare_resolved."
+                    if rubric.format >= 1.0
+                    else "submit_hypothesis must be called before declare_resolved."
+                ),
+                weight=0.10,
+            ),
+            GraderCheck(
+                name="anticheat",
+                passed=rubric.anticheat >= 1.0,
+                detail=(
+                    "At least one query_* action ran before declare_resolved."
+                    if rubric.anticheat >= 1.0
+                    else "declare_resolved without prior evidence-gathering — blocked."
                 ),
                 weight=0.15,
             ),
             GraderCheck(
-                name="end_to_end_check",
-                passed=checks.get("end_to_end", False),
+                name="efficiency",
+                passed=rubric.efficiency >= 0.5,
                 detail=(
-                    "The end-to-end service check passed."
-                    if checks.get("end_to_end")
-                    else "The end-to-end service check has not passed yet."
-                ),
-                weight=0.20,
-            ),
-            GraderCheck(
-                name="critical_services_recovered",
-                passed=breakdown["recovery_score"] >= 0.20,
-                detail=(
-                    "Critical-path services are recovered."
-                    if breakdown["recovery_score"] >= 0.20
-                    else "Critical-path services are still degraded or crashed."
-                ),
-                weight=0.20,
-            ),
-            GraderCheck(
-                name="declare_resolved",
-                passed=bool(state.get("incident_resolved")),
-                detail=(
-                    "The agent declared the incident resolved after objective checks passed."
-                    if state.get("incident_resolved")
-                    else "The incident has not been safely declared resolved."
+                    f"exp(-{state.get('current_tick', 0)} / "
+                    f"{scenario.get('optimal_ticks', 10)}) = {rubric.efficiency:.3f}"
                 ),
                 weight=0.10,
-            ),
-            GraderCheck(
-                name="speed_bonus_earned",
-                passed=breakdown.get("speed_bonus", 0.0) > 0.0,
-                detail=(
-                    "Resolved faster than optimal_ticks."
-                    if breakdown.get("speed_bonus", 0.0) > 0.0
-                    else "Did not beat optimal tick budget."
-                ),
-                weight=0.10,
-            ),
-            GraderCheck(
-                name="noise_handling",
-                passed=breakdown.get("noise_handling_score", 0.0) >= 0.035,
-                detail=(
-                    "Minimal or no queries against noise services."
-                    if breakdown.get("noise_handling_score", 0.0) >= 0.035
-                    else "Wasted queries on noise services."
-                ),
-                weight=0.05,
             ),
         ]
         return GraderReport(
@@ -205,9 +240,9 @@ class UnifiedIncidentGrader:
             passed=passed,
             score=breakdown["final_score"],
             message=(
-                "Incident diagnosed, remediated, and verified honestly."
+                "Outcome dimension cleared: incident remediated and verified."
                 if passed
-                else "Incident is not yet safely resolved."
+                else "Outcome dimension not cleared yet."
             ),
             breakdown=breakdown,
             checks=report_checks,
