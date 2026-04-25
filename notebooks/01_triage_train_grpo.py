@@ -84,13 +84,15 @@ REQUIRED = ["unsloth", "trl", "vllm", "datasets", "transformers", "matplotlib", 
 if _all_installed(REQUIRED):
     print("All deps already installed — skipping pip install")
 else:
-    print("Installing deps (~3 min) ...")
-    subprocess.check_call([sys.executable, "-m", "pip", "install", "-q", "--upgrade", "pip"])
-    subprocess.check_call([sys.executable, "-m", "pip", "install", "-q", "-e", ".[dev,train]"])
-    subprocess.check_call([sys.executable, "-m", "pip", "install", "-q",
+    print("Installing deps — this is 8-15 min on first run (vLLM + Unsloth pull ~3 GB).")
+    print("Progress is printed live below. If you don't see new lines for >2 min, open a")
+    print("Terminal and run `ps aux | grep pip` to verify it's still working.\n")
+    subprocess.check_call([sys.executable, "-m", "pip", "install", "--upgrade", "pip"])
+    subprocess.check_call([sys.executable, "-m", "pip", "install", "-e", ".[dev,train]"])
+    subprocess.check_call([sys.executable, "-m", "pip", "install",
                             "unsloth", "trl>=1.0,<2.0", "vllm",
                             "datasets", "accelerate", "matplotlib", "pandas"])
-    print("✓ Deps installed")
+    print("\n✓ Deps installed")
 
 # ---- Step 3: GPU sanity check via nvidia-smi (before importing torch) ----
 gpu = subprocess.run(
