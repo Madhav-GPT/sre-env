@@ -64,9 +64,9 @@ The shaping is *potential-based*: shaping rewards form a telescoping sum that ex
 
 ---
 
-## 4. The hardened ≤ 0.80 baseline ceiling
+## 4. The hardened [0.70, 0.80] baseline ceiling band
 
-A scripted-optimal baseline that follows the canonical action sequence for each template tops out at ~0.77 across all 12 templates. The CI invariant `test_baseline_ceiling_is_hardened_below_080` enforces this — any reward-config change that pushes the baseline above 0.80 is rejected.
+A scripted-optimal baseline that follows the canonical action sequence for each template lands in the **[0.70, 0.80]** band across all 12 templates. The CI invariant `test_baseline_ceiling_is_hardened_below_080` enforces both edges of this band — any reward-config change that pushes the baseline above 0.80 (no headroom for trained agents) or below 0.70 (the scripted path doesn't even solve cleanly) is rejected. The 0.20-wide headroom from 0.80 → 1.0 is what GRPO trains *into*; the 0.10-wide floor from 0.70 → 0.80 is the scripted-vs-trained margin.
 
 Why? Because **the headroom 0.80 → 0.99 is what GRPO trains into**. The baseline can earn:
 

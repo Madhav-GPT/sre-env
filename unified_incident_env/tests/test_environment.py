@@ -208,21 +208,43 @@ def test_blast_radius_increments_on_mitigations() -> None:
 
 
 def test_baseline_ceiling_is_hardened_below_080() -> None:
-    """Scripted-optimal baseline must not score above ~0.80. Headroom left
-    for a trained agent that earns speed_bonus by finishing faster than
-    optimal_ticks."""
-    for scenario_id in (
+    """Scripted-optimal baseline must land in the [0.70, 0.80] band across
+    every Basic template — round-2 templates included.
+
+    Why [0.70, 0.80] specifically:
+    - 0.80 hard cap: leaves 0.20 of headroom for a trained agent that beats
+      ``optimal_ticks`` *and* avoids every noise query — the training target.
+    - 0.70 floor: confirms the scripted baseline actually solves cleanly. Any
+      template scoring below 0.70 has a calibration bug (optimal_ticks too
+      generous, post-rollback states not healthy enough, etc.) and must be
+      fixed before shipping.
+
+    See docs/REWARD_DESIGN.md §4 for the full rationale.
+    """
+    # All 12 templates — v2 + round-2 share the same ceiling band.
+    template_ids = (
+        # v2 templates
         "worker_deploy_cascade",
         "db_config_rollout",
         "gateway_auth_rollout",
         "payment_webhook_misconfig",
         "schema_drift_missing_migration",
         "cache_stale_state",
-    ):
+        # round-2 templates
+        "dep_degradation",
+        "memory_leak_oom",
+        "auth_token_expiry",
+        "network_partition",
+        "rate_limit_retry_storm",
+        "migration_lock",
+    )
+    for scenario_id in template_ids:
         obs = _run_baseline_for_scenario(scenario_id)
         assert obs is not None
-        assert obs.final_score <= 0.80, f"{scenario_id} ceiling {obs.final_score} exceeds headroom budget"
-        assert obs.final_score >= 0.55, f"{scenario_id} ceiling {obs.final_score} is too low; env is unsolvable"
+        assert 0.70 <= obs.final_score <= 0.80, (
+            f"{scenario_id} ceiling {obs.final_score:.3f} is outside the [0.70, 0.80] band "
+            f"— see docs/REWARD_DESIGN.md §4. The trained-agent headroom is gone."
+        )
 
 
 def test_speed_bonus_rewards_finishing_under_optimal_ticks() -> None:

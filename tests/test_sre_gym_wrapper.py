@@ -87,11 +87,32 @@ def test_max_tier_lists_one_family() -> None:
     assert fam["scenario_population"]["size"] >= 30
 
 
-def test_max_tier_reset_raises_with_docs_pointer() -> None:
+def test_max_tier_reset_returns_observation() -> None:
+    """Max tier is now runnable via the Python state-machine simulator."""
     env = SREGym(tier=Tier.MAX)
+    obs = env.reset(family_id="ecommerce_vibecoded_saas", chaos="deploy_regression", seed=1)
+    assert obs.family_id == "ecommerce_vibecoded_saas"
+    assert obs.chaos == "deploy_regression"
+    assert len(obs.services) >= 20
+
+
+def test_advanced_tier_run_method_returns_result() -> None:
+    """Advanced tier is now runnable via the chained-Basic-episodes runner."""
+    env = SREGym(tier=Tier.ADVANCED)
+    result = env.run("cascading_release_train", seed=1)
+    assert result.scenario_id == "cascading_release_train"
+    assert len(result.phases) == 2
+    assert result.success is True
+    assert 0.5 < result.final_reward < 0.85
+
+
+def test_advanced_tier_reset_still_raises_for_per_step_caller() -> None:
+    """Advanced is episodic — direct reset() must still raise."""
+    env = SREGym(tier=Tier.ADVANCED)
     with pytest.raises(TierNotRunnableError) as info:
         env.reset()
-    assert "docs/MAX_TIER.md" in info.value.docs_path
+    assert "docs/ADVANCED_TIER.md" in info.value.docs_path
+    assert "run(scenario_id)" in str(info.value)
 
 
 def test_max_family_has_operator_notes() -> None:

@@ -49,6 +49,53 @@ def _service_order(observation: UnifiedIncidentObservation) -> list[str]:
     return [name for name, _payload in services]
 
 
+def _heuristic_root_cause(observation: UnifiedIncidentObservation) -> tuple[str, list[str]]:
+    """Pick a plausible root cause + affected services from the observation.
+
+    Decision tree maps the loudest signal to the most likely root cause across
+    all 12 templates. This is the Stage-1 fallback — when the LLM is offline
+    or returns malformed JSON, the heuristic still produces a calibrated
+    hypothesis good enough to score partial credit on the 5-component rubric.
+
+    Each branch corresponds to one of the 12 RootCauseType enum values.
+    """
+    summary = (observation.incident_summary or "").lower()
+    services = observation.service_health
+    db = services.get("database")
+    cache = services.get("cache")
+    worker = services.get("worker")
+    gateway = services.get("api-gateway")
+
+    # Round-2 templates first (the new failure modes)
+    if "memory" in summary or "oom" in summary or "restart loop" in summary:
+        return "memory_leak_runaway", ["worker", "database", "api-gateway"]
+    if "token" in summary or "credential" in summary or "auth" in summary and "401" in summary:
+        return "credential_rotation_breakage", ["worker", "api-gateway"]
+    if "dns" in summary or "discovery" in summary or "partition" in summary:
+        return "network_dns_partition", ["cache", "worker", "api-gateway"]
+    if "retry" in summary or "rate limit" in summary or "429" in summary:
+        return "external_rate_limit_storm", ["worker", "database", "api-gateway"]
+    if "lock" in summary or "migration" in summary and "concurrently" in summary:
+        return "migration_lock_contention", ["database", "worker", "api-gateway"]
+    if "maxclients" in summary or "pool" in summary and "cache" in summary:
+        return "dependency_pool_exhausted", ["cache", "worker", "api-gateway"]
+
+    # Vibe-coded SaaS extension band
+    if "stripe" in summary or "webhook" in summary:
+        return "payment_webhook_regression", ["api-gateway", "database"]
+    if "schema" in summary or "prisma" in summary or "plan_tier" in summary:
+        return "schema_migration_mismatch", ["api-gateway", "worker", "database"]
+    if "ttl" in summary or "stale" in summary or "session" in summary and "cross" in summary:
+        return "cache_ttl_regression", ["cache", "api-gateway"]
+
+    # v2 catalogue (default fallbacks based on which service is loudest)
+    if gateway and gateway.error_rate_pct >= 30 and (db is None or db.error_rate_pct < 5):
+        return "api_gateway_fault", ["api-gateway", "worker"]
+    if db and db.status == "degraded" and (worker is None or worker.status != "crashed"):
+        return "database_only_failure", ["database", "api-gateway", "worker"]
+    return "bad_worker_deploy", ["worker", "database", "api-gateway"]
+
+
 def _default_action_for_type(action_type: str, observation: UnifiedIncidentObservation) -> dict[str, Any]:
     services = _service_order(observation)
     service = services[0] if services else "database"
@@ -64,13 +111,14 @@ def _default_action_for_type(action_type: str, observation: UnifiedIncidentObser
             check_name = "end_to_end"
         return {"action_type": action_type, "check_name": check_name}
     if action_type == "submit_hypothesis":
+        root_cause, affected = _heuristic_root_cause(observation)
         return {
             "action_type": "submit_hypothesis",
             "hypothesis": {
-                "root_cause": "bad_worker_deploy",
-                "affected_services": ["worker", "database"],
-                "confidence": 0.5,
-                "recommended_next_action": "query_deploys",
+                "root_cause": root_cause,
+                "affected_services": affected,
+                "confidence": 0.6,
+                "recommended_next_action": "rollback_deploy",
             },
         }
     return {"action_type": action_type}
@@ -126,6 +174,31 @@ def build_user_prompt(observation: UnifiedIncidentObservation) -> str:
     )
 
 
+_ROOT_CAUSE_ENUM: list[str] = [
+    # Original 3 (v2 catalogue)
+    "bad_worker_deploy",
+    "database_only_failure",
+    "api_gateway_fault",
+    # Vibe-coded SaaS extension band
+    "payment_webhook_regression",
+    "schema_migration_mismatch",
+    "cache_ttl_regression",
+    # Round-2 Basic-tier additions (April 2026 hackathon)
+    "dependency_pool_exhausted",
+    "memory_leak_runaway",
+    "credential_rotation_breakage",
+    "network_dns_partition",
+    "external_rate_limit_storm",
+    "migration_lock_contention",
+]
+"""All 12 root causes the model can hypothesize.
+
+Mirrors ``unified_incident_env.models.RootCauseType`` exactly. Kept as a module-
+level constant so a CI test can import and diff this against the Literal
+without round-tripping through reflection.
+"""
+
+
 def _schema(observation: UnifiedIncidentObservation) -> dict[str, Any]:
     properties: dict[str, Any] = {
         "action_type": {"type": "string", "enum": observation.allowed_actions},
@@ -135,7 +208,7 @@ def _schema(observation: UnifiedIncidentObservation) -> dict[str, Any]:
         "hypothesis": {
             "type": "object",
             "properties": {
-                "root_cause": {"type": "string", "enum": ["bad_worker_deploy", "database_only_failure", "api_gateway_fault"]},
+                "root_cause": {"type": "string", "enum": list(_ROOT_CAUSE_ENUM)},
                 "affected_services": {
                     "type": "array",
                     "items": {"type": "string", "enum": sorted(observation.service_health)},

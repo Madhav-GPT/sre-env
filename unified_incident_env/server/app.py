@@ -21,6 +21,7 @@ from ..models import (
 )
 from .challenge import current_runtime_progress, grade_episode, list_baselines, list_scenarios, set_runtime_progress
 from .environment import UnifiedIncidentEnvironment
+from .mcp import attach_mcp_routes
 
 _BOOTSTRAP_ENV = UnifiedIncidentEnvironment()
 set_runtime_progress(_BOOTSTRAP_ENV.state.model_dump())
@@ -80,6 +81,7 @@ def create_compatible_app():
         return HTMLResponse(_SIMPLE_HTML)
 
     _attach_metadata_routes(app)
+    attach_mcp_routes(app, env_factory)
 
     return app
 

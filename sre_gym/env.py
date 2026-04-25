@@ -3,21 +3,24 @@
 ``SREGym`` is the public-facing entry point.  Constructing it with
 ``tier=Tier.BASIC`` returns a runnable environment that delegates every method
 call to ``unified_incident_env.UnifiedIncidentEnvironment`` — i.e. the existing
-Hugging Face Space surface.  The Advanced and Max tiers raise a structured
-``TierNotRunnableError`` carrying a pointer to the design doc and any data
-artifacts shipped for that tier (reference scenarios, family specs, compose
-files).
+Hugging Face Space surface.  Advanced and Max are also runnable now via the
+``run()`` method, which dispatches to ``sre_gym.advanced.runner.run_advanced``
+(chained Basic episodes with horizon state) and ``sre_gym.max.runner.run_max``
+(Python state-machine simulator over the 22-node service graph).
 
-This indirection is the difference between "a single-tier env that's hard to
-extend" and "an env that visibly carries the three-tier story even if only one
-tier is trained against".
+The legacy ``reset() / step() / state`` per-step interface remains supported
+for Basic. Advanced is *episodic* (run a multi-phase scenario end-to-end)
+rather than per-step, so its ``reset()`` raises with a pointer to ``run()``.
+Max also supports per-step via ``MaxRunnerEnv`` (returned by ``run()`` when
+the caller passes ``stream=True``).
 """
 
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Any, Iterable
+from typing import Any, Callable, Iterable
 
+from .exceptions import TierUnavailableError
 from .tier import TIER_CONFIGS, Tier, TierConfig
 
 
@@ -25,11 +28,14 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 
 
 class TierNotRunnableError(NotImplementedError):
-    """Raised when a non-runnable tier is invoked end-to-end.
+    """Legacy alias kept for backward compatibility.
+
+    The Advanced and Max tiers are now runnable via ``SREGym.run()``. This
+    exception still raises if you call the per-step ``reset() / step() / state``
+    interface on a tier that only supports episodic execution (Advanced).
 
     The exception carries the tier config + design-doc path so the caller can
-    surface the right pointer.  This is *not* an error in the testing sense —
-    Advanced and Max are deliberately design-only in this repo.
+    surface the right pointer.
     """
 
     def __init__(self, tier: Tier, message: str, *, docs_path: str = "") -> None:
@@ -66,23 +72,29 @@ class SREGym:
             from unified_incident_env.server.environment import UnifiedIncidentEnvironment
             self._delegate = UnifiedIncidentEnvironment()
 
-    # ------- Runnable surface -------
+    # ------- Runnable surface (Basic per-step, all tiers via run()) -------
     def reset(self, **kwargs: Any) -> Any:
-        if self._delegate is None:
-            raise TierNotRunnableError(
-                self.tier,
-                f"Tier {self.tier.value} is design-only in this repo. "
-                f"See {self.config.docs_path} for the spec; the Basic tier is the "
-                f"runnable surface (clone the repo and use Tier.BASIC).",
-                docs_path=self.config.docs_path,
-            )
-        return self._delegate.reset(**kwargs)
+        if self.tier is Tier.BASIC and self._delegate is not None:
+            return self._delegate.reset(**kwargs)
+        if self.tier is Tier.MAX:
+            from sre_gym.max.runner import MaxRunnerEnv
+
+            self._delegate = MaxRunnerEnv(family_id=kwargs.get("family_id", "ecommerce_vibecoded_saas"))
+            chaos = kwargs.get("chaos") or "deploy_regression"
+            seed = int(kwargs.get("seed", 0))
+            return self._delegate.reset(chaos=chaos, seed=seed)
+        raise TierNotRunnableError(
+            self.tier,
+            f"Tier {self.tier.value} is episodic — use SREGym(tier).run(scenario_id) "
+            f"or `python -m sre_gym.{self.tier.value} run …` instead of per-step reset().",
+            docs_path=self.config.docs_path,
+        )
 
     def step(self, action: Any, **kwargs: Any) -> Any:
         if self._delegate is None:
             raise TierNotRunnableError(
                 self.tier,
-                f"Tier {self.tier.value} step() not implemented.",
+                f"Tier {self.tier.value} requires reset() before step().",
                 docs_path=self.config.docs_path,
             )
         return self._delegate.step(action, **kwargs)
@@ -92,10 +104,43 @@ class SREGym:
         if self._delegate is None:
             raise TierNotRunnableError(
                 self.tier,
-                f"Tier {self.tier.value} state not implemented.",
+                f"Tier {self.tier.value} requires reset() before reading state.",
                 docs_path=self.config.docs_path,
             )
         return self._delegate.state
+
+    def run(
+        self,
+        scenario_id: str,
+        *,
+        policy: Callable[[Any], dict[str, Any]] | None = None,
+        seed: int = 0,
+        on_log: Callable[[str], None] | None = None,
+        **kwargs: Any,
+    ) -> Any:
+        """Run a scenario end-to-end on the active tier.
+
+        Returns
+        -------
+        For Basic, returns a Pydantic ``BasicResult`` (single-episode rollout).
+        For Advanced, returns ``AdvancedResult`` (multi-phase chained episodes
+        with horizon-decay).
+        For Max, returns ``MaxResult`` (graph-state trace + outcome score).
+        """
+        if self.tier is Tier.BASIC:
+            from sre_gym.basic_runner import run_basic
+
+            return run_basic(scenario_id, policy=policy, seed=seed, on_log=on_log)
+        if self.tier is Tier.ADVANCED:
+            from sre_gym.advanced.runner import run_advanced
+
+            return run_advanced(scenario_id, policy=policy, seed=seed, on_log=on_log)
+        if self.tier is Tier.MAX:
+            from sre_gym.max.runner import run_max
+
+            chaos = kwargs.get("chaos") or "deploy_regression"
+            return run_max(scenario_id, chaos=chaos, policy=policy, seed=seed, on_log=on_log)
+        raise TierUnavailableError(self.tier.value, f"unknown tier {self.tier!r}")
 
     # ------- Introspection surface (works on all tiers) -------
     def describe(self) -> dict[str, Any]:

@@ -7,7 +7,7 @@ docs/playground/training scripts to surface the design coherently.
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from enum import Enum
 from typing import Optional
 
@@ -79,20 +79,22 @@ TIER_CONFIGS: dict[Tier, TierConfig] = {
         escalation_dimension="horizon",
         persona="seed/Series A startup with $300-500 of compute or research lab with 1-2 A100 days",
         expected_compute_budget="1-2 A100 days for a 7B-14B LoRA + GRPO + DPO pass",
-        scenario_count=3,                # 3 reference scenarios shipped (data-only)
+        scenario_count=3,                # 3 reference scenarios shipped
         scenario_template_count=3,
         procgen_variants_per_template=0,
         expected_action_count=28,
         max_episode_ticks=80,
         observation_richness="noisy-multi-source",
-        runnable=False,
+        runnable=True,                   # chained Basic episodes via sre_gym.advanced.runner
         notes=(
             "Wider 15-20 service topology, multi-incident sequences (one fix introduces "
             "a downstream incident), partial-observability noise (the logging pipeline "
             "itself can be the affected service), expanded action set with traces / PRs "
-            "/ feature-flag toggles / on-call escalation. Three concrete reference "
-            "scenarios shipped in sre_gym/advanced/scenarios/ as the proof-of-shape; "
-            "not trained in this repo. See docs/ADVANCED_TIER.md for the design."
+            "/ feature-flag toggles / on-call escalation. Implemented as chained Basic "
+            "episodes with persistent horizon state (unresolved alerts, pending deploys, "
+            "tech-debt counter, horizon-decay reward). Run via "
+            "`python -m sre_gym.advanced run <scenario_id>` or "
+            "`SREGym(tier=Tier.ADVANCED).run(scenario_id)`."
         ),
         docs_path="docs/ADVANCED_TIER.md",
         scenarios_glob="sre_gym/advanced/scenarios/*.yaml",
@@ -105,18 +107,19 @@ TIER_CONFIGS: dict[Tier, TierConfig] = {
         scenario_count=1,                # one fully-specced family shipped
         scenario_template_count=1,
         procgen_variants_per_template=0,
-        expected_action_count=-1,        # unbounded subprocess access
-        max_episode_ticks=-1,            # unbounded
+        expected_action_count=11,        # Python simulator reuses Basic 11-action interface
+        max_episode_ticks=40,
         observation_richness="raw-real",
-        runnable=False,
+        runnable=True,                   # Python state-machine simulation via sre_gym.max.runner
         notes=(
-            "Ephemeral docker-compose / k3d sandbox per reset(). The agent's "
-            "rollback_deploy is real `kubectl rollout undo`; query_logs reads from a "
-            "real Loki/Promtail pipeline; chaos injection is real Chaos-Mesh patterns. "
-            "Reward is computed from the actual recovery state of the actual stack. "
-            "One fully-specced family shipped (e-commerce + Stripe + Supabase + Vercel) "
-            "with compose.max.yaml + chaos-injection spec + reference trace; the "
-            "infrastructure is not provisioned in this repo. See docs/MAX_TIER.md."
+            "The Space runs Max as a Python state-machine simulation over the "
+            "22-node service graph; actions mutate graph state and reward reuses the "
+            "Basic potential-shaped function over graph health. The real docker-compose "
+            "stack lives in sre_gym/max/families/ecommerce_vibecoded_saas/compose/ and "
+            "can be run locally with `docker compose up` for users with Docker. The "
+            "Python simulator is faithful to the chaos patterns but does not reproduce "
+            "real-network failure modes. Run via `python -m sre_gym.max run <family>` "
+            "or `SREGym(tier=Tier.MAX).run(family_id, chaos=...)`."
         ),
         docs_path="docs/MAX_TIER.md",
         scenarios_glob="sre_gym/max/families/*.yaml",
