@@ -1,18 +1,21 @@
 """Provider abstractions for BYOK chat-completion routing.
 
-Every provider implements a single async method, ``chat(messages, **kwargs)``,
+Every provider implements an async ``chat(messages, **kwargs)`` method
 returning the assistant text. Errors raise typed exceptions from
 ``sre_gym.exceptions`` so the UI can surface a redacted message rather than
 echoing the failing key.
 
-Three implementations:
+Four implementations (UI Build Addendum §3.4):
 
-- ``HFInferenceProvider``     — huggingface_hub.InferenceClient
-- ``AnthropicProvider``       — official anthropic SDK
-- ``OpenAICompatibleProvider``— OpenAI/Together/Fireworks/Groq/DeepSeek
+- ``HFInferenceProvider``     — huggingface_hub.AsyncInferenceClient
+- ``AnthropicProvider``       — anthropic.AsyncAnthropic
+- ``OpenAICompatibleProvider``— openai.AsyncOpenAI (covers OpenAI / Together /
+                                Fireworks / Groq / DeepSeek)
+- ``DummyProvider``           — offline test provider; returns canned tool calls
 
-All three are sync-callable too via ``provider.chat_sync(...)``; the Gradio
-streaming path uses the sync surface to keep the per-tick yield loop simple.
+Each also exposes ``chat_sync(...)`` for callers that want a sync surface
+(the Gradio per-tick streaming loop uses this to avoid threading the event
+loop through every yield).
 
 Security
 --------
@@ -225,6 +228,60 @@ class OpenAICompatibleProvider:
     async def chat(self, messages: list[dict[str, str]], **kwargs: Any) -> str:
         import asyncio
         return await asyncio.to_thread(self.chat_sync, messages, **kwargs)
+
+
+# ---------------------------------------------------------------------------
+# DummyProvider — offline test harness (UI Build Addendum §3.4).
+# ---------------------------------------------------------------------------
+
+
+class DummyProvider:
+    """Offline provider — returns a canned JSON action without any network call.
+
+    Used by ``tests/test_providers_smoke.py`` and by
+    ``python -m sre_gym.ui.runner --provider dummy`` so the UI streaming
+    pipeline can be exercised without burning any API credits.
+
+    The default cycle alternates evidence-gathering and a final rollback so
+    the trace looks plausibly like an LLM-driven episode. Callers can pass
+    ``responses=`` to inject a deterministic sequence of action dicts.
+    """
+
+    name = "dummy"
+
+    DEFAULT_CYCLE: tuple[dict[str, Any], ...] = (
+        {"action_type": "query_logs", "service": "worker"},
+        {"action_type": "query_deploys", "service": "worker"},
+        {"action_type": "query_metrics", "service": "database", "metric": "cpu"},
+        {
+            "action_type": "submit_hypothesis",
+            "hypothesis": {
+                "root_cause": "bad_worker_deploy",
+                "affected_services": ["worker", "database", "api-gateway"],
+                "confidence": 0.82,
+                "recommended_next_action": "rollback_deploy",
+            },
+        },
+        {"action_type": "rollback_deploy", "service": "worker"},
+        {"action_type": "restart_service", "service": "database"},
+        {"action_type": "run_check", "check_name": "database_recovery"},
+        {"action_type": "run_check", "check_name": "end_to_end"},
+        {"action_type": "declare_resolved"},
+    )
+
+    def __init__(self, model: str = "dummy", responses: tuple[dict[str, Any], ...] | None = None) -> None:
+        self.model = model
+        self._responses = responses or self.DEFAULT_CYCLE
+        self._idx = 0
+
+    def chat_sync(self, messages: list[dict[str, str]], **kwargs: Any) -> str:
+        import json
+        payload = self._responses[self._idx % len(self._responses)]
+        self._idx += 1
+        return json.dumps(payload)
+
+    async def chat(self, messages: list[dict[str, str]], **kwargs: Any) -> str:
+        return self.chat_sync(messages, **kwargs)
 
 
 # ---------------------------------------------------------------------------

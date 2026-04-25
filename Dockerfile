@@ -22,7 +22,7 @@ RUN pip install --no-cache-dir --upgrade pip && \
 
 EXPOSE 7860
 
-# app.py mounts the Gradio terminal-UI inside the OpenEnv FastAPI server, so a
-# single port (7860) serves both the UI at / and the OpenEnv routes at /tasks
-# /step /reset /mcp /health.
-CMD ["python", "app.py"]
+# app.py exposes a module-level ``app`` object that is the FastAPI server with
+# Gradio mounted at /. Single port (7860) serves both the UI at / and every
+# OpenEnv / MCP / metadata route at /tasks /step /reset /mcp /health /info etc.
+CMD ["uvicorn", "app:app", "--host", "0.0.0.0", "--port", "7860"]

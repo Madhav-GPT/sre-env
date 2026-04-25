@@ -271,28 +271,46 @@ class UnifiedIncidentEnvironment(Environment[UnifiedIncidentAction, UnifiedIncid
             noise_logs = self._noise_knobs().get("noise_logs", {})
             detail = noise_logs.get(service, f"{service} logs show no incident-correlated regression.")
             return f"{service}: {detail}"
-        return self._episode["scenario"]["logs"][service]
+        # Some scenarios may not declare logs for every service — return a benign default
+        # instead of raising KeyError so an LLM agent that picks an unmodelled query
+        # gets useful negative feedback rather than crashing the env.
+        return self._episode["scenario"]["logs"].get(
+            service,
+            f"{service} logs are unremarkable and don't correlate with the active incident.",
+        )
 
     def _query_metrics(self, service: str | None, metric: str | None) -> str:
         assert service is not None and metric is not None
         if self._is_noise_service(service):
             self._record_noise_query(service)
             return f"{service} {metric} metrics are within ordinary background variance and unrelated to the active incident."
-        return self._episode["scenario"]["metrics"][service][metric]
+        per_service = self._episode["scenario"]["metrics"].get(service, {})
+        if metric in per_service:
+            return per_service[metric]
+        return (
+            f"{service} {metric} is at baseline (no incident-correlated movement); "
+            f"the active fault doesn't surface on this metric."
+        )
 
     def _query_dependencies(self, service: str | None) -> str:
         assert service is not None
         if self._is_noise_service(service):
             self._record_noise_query(service)
             return f"{service} is off the primary user-impact path and is not driving the incident."
-        return self._episode["scenario"]["dependencies"][service]
+        return self._episode["scenario"]["dependencies"].get(
+            service,
+            f"{service} has no documented dependency edges in this scenario; treat as a leaf.",
+        )
 
     def _query_deploys(self, service: str | None) -> str:
         assert service is not None
         if self._is_noise_service(service):
             self._record_noise_query(service)
             return f"No recent {service} deploy correlates with the active incident timeline."
-        return self._episode["scenario"]["deploy_history"][service]
+        return self._episode["scenario"]["deploy_history"].get(
+            service,
+            f"No recent {service} deploys are recorded.",
+        )
 
     def _submit_hypothesis(self, action: UnifiedIncidentAction) -> tuple[float, bool, str]:
         assert action.hypothesis is not None

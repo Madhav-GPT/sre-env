@@ -7,7 +7,7 @@ import os
 from typing import Any
 
 from fastapi import HTTPException
-from fastapi.responses import HTMLResponse, RedirectResponse
+from fastapi.responses import HTMLResponse
 from openenv.core.env_server.http_server import create_fastapi_app
 
 from ..models import (
@@ -72,12 +72,19 @@ def create_compatible_app():
         max_concurrent_envs=int(os.environ.get("MAX_CONCURRENT_ENVS", "32")),
     )
 
-    @app.get("/", include_in_schema=False)
-    async def web_root():
-        return RedirectResponse(url="/simple")
+    # /  — reserved for the Gradio terminal UI mounted by app.py at the repo root.
+    # If app.py is NOT in the import path (e.g. running uvicorn directly against
+    # this module), `/` falls through to a 404; that's intentional. The legacy
+    # markdown landing now lives at /info (see below).
+
+    @app.get("/info", include_in_schema=False)
+    async def web_info() -> HTMLResponse:
+        """Legacy quick-links / markdown landing. Kept as a stable fallback URL."""
+        return HTMLResponse(_SIMPLE_HTML)
 
     @app.get("/simple", include_in_schema=False)
-    async def simple_console():
+    async def simple_console() -> HTMLResponse:
+        """Backwards-compatible alias for /info — older docs / scripts may link here."""
         return HTMLResponse(_SIMPLE_HTML)
 
     _attach_metadata_routes(app)
