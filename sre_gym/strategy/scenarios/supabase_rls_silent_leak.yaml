@@ -1,0 +1,206 @@
+# ============================================================================
+# DESIGN-SPEC HEADER (added 2026-04-26 in response to peer review)
+#
+# This YAML declares an Advanced-tier reference scenario. The Advanced runner
+# (sre_gym/advanced/runner.py) executes this scenario by chaining Basic-tier
+# episodes with persistent horizon state -- it does NOT implement the wider
+# action universe declared below as `allowed_actions:`.
+#
+# Implemented actions (the same 11 Basic actions, no more):
+#   query_logs          query_metrics       query_dependencies
+#   query_deploys       rollback_deploy     restart_service
+#   isolate_service     run_check           submit_hypothesis
+#   escalate            declare_resolved
+#
+# Everything else listed under `allowed_actions:` here -- query_traces,
+# query_recent_prs, read_diff, feature_flag_toggle, propose_postmortem,
+# escalate_security, draft_customer_comm, query_session_cardinality,
+# query_audit_log, etc. -- is **design-spec only**. There are no Python
+# handlers for those actions; they exist to document where the Advanced
+# tier *would* go with another 1-2 weeks of focused engineering.
+#
+# The Advanced runner therefore approximates these scenarios by mapping each
+# phase to a Basic template (see PHASE_TO_BASIC_TEMPLATE in runner.py) and
+# scoring against the Basic env's grader. The horizon-decay factor and the
+# unresolved-alerts/pending-deploys carry-over are real; the scenario-level
+# fidelity is intentionally narrative-only.
+# ============================================================================
+
+# Advanced tier reference scenario #3
+#
+# THEME: Security-aware incident response. The "incident" is a Supabase RLS
+# (Row-Level-Security) policy regression that silently leaks one tenant's
+# data into another. There is NO loud SLO breach; only abnormal read patterns
+# and customer-support ticket clustering. The agent must contain the data
+# leak BEFORE rolling back, and produce a security-aware postmortem.
+# DIMENSION TESTED: cross-domain reasoning (security x reliability) — the
+# capability gap that NO existing SRE benchmark currently scores.
+
+id: supabase_rls_silent_leak
+tier: advanced
+difficulty: very_hard
+name: Supabase RLS Silent Cross-Tenant Leak
+description: >-
+  A migration deploy at 13:48 UTC introduced a typo in the orders-service
+  Row-Level-Security policy: the ``USING (tenant_id = auth.uid())`` clause
+  was changed to ``USING (TRUE)`` for two queries during a refactor.
+  Tenants A's authenticated session now sees Tenant B's open orders. There
+  is no SLO breach. There are no 5xx errors. There is one Sentry alert
+  ("unusual read pattern: cardinality of distinct tenant_id per session
+  exceeded baseline by 6sigma") and seven support tickets. The agent must
+  recognize that this is a security event masquerading as a reliability one,
+  CONTAIN it (toggle the feature flag that gates the affected endpoints) BEFORE
+  rolling back, and surface the cross-tenant exposure window in the postmortem.
+
+topology:
+  services:
+    - {id: vercel-edge,        kind: edge,       owner: platform}
+    - {id: api-gateway,        kind: bff,        owner: platform}
+    - {id: orders-service,     kind: backend,    owner: orders,   anomaly_origin: true}
+    - {id: payments-service,   kind: backend,    owner: payments}
+    - {id: search-service,     kind: backend,    owner: discovery}
+    - {id: postgres-primary,   kind: database,   owner: platform}
+    - {id: redis-sessions,     kind: cache,      owner: identity}
+    - {id: supabase-auth,      kind: external,   owner: identity}
+    - {id: sentry,             kind: observability, owner: platform}
+    - {id: posthog,            kind: observability, owner: growth}
+    - {id: stripe-webhook,     kind: external,   owner: payments}
+    - {id: zendesk-tickets,    kind: external,   owner: support}
+
+incident_chain:
+  - phase: 1_containment
+    starts_at_tick: 0
+    triggered_by: rls_policy_typo_in_recent_migration
+    failing_services: [orders-service, postgres-primary]   # logically — the data leak path
+    correct_action: feature_flag_toggle(orders_list_view, off)
+    deceptive_signal: |
+      All standard reliability metrics (5xx rate, latency, CPU, memory) are
+      normal. The agent must recognize that "cardinality of distinct tenant_id
+      per session" jumping is the signal, NOT request volume.
+  - phase: 2_root_cause
+    starts_at_tick: 12
+    triggered_by: containment_buys_time
+    failing_services: [orders-service]
+    correct_action: rollback_deploy(orders-service)
+    deceptive_signal: |
+      The migration that introduced the typo was reviewed and merged 3h ago.
+      A naive bisect would suggest a more recent commit. The agent must
+      query_recent_prs(postgres-primary) for migrations specifically.
+  - phase: 3_postmortem
+    starts_at_tick: 18
+    triggered_by: root_cause_fix
+    correct_action: propose_postmortem with security_classification field
+    deceptive_signal: |
+      Postmortem must include data-leak window calculation
+      (sessions × duration × tenants exposed), legal/compliance hand-off,
+      and customer-comm draft. Skipping this fails postmortem_quality.
+
+allowed_actions:
+  - query_logs
+  - query_metrics
+  - query_traces
+  - query_dependencies
+  - query_deploys
+  - query_recent_prs
+  - rollback_deploy
+  - restart_service
+  - isolate_service
+  - run_check
+  - feature_flag_toggle           # CRITICAL: containment for phase 1
+  - query_external_dep_status
+  - escalate
+  - escalate_security             # NEW: pages security on-call instead of platform
+  - submit_hypothesis
+  - mark_resolution_partial
+  - propose_postmortem
+  - draft_customer_comm           # NEW: drafts a customer-facing notification
+  - tag_release_dirty
+  - declare_resolved
+  - request_legal_handoff         # NEW: hand off to legal/compliance
+  - read_diff
+  - query_audit_log               # NEW: read postgres audit log
+  - query_session_cardinality     # NEW: bespoke metric — distinct tenant IDs per session
+
+reward_dimensions:
+  containment_first:               {weight: 0.15, range: [0, 0.15]}    # toggle flag BEFORE rollback
+  recovery_score:                  {weight: 0.10, range: [0, 0.10]}
+  verification_score:              {weight: 0.10, range: [0, 0.10]}
+  speed_bonus:                     {weight: 0.05, range: [0, 0.05]}
+  security_recognition:            {weight: 0.15, range: [0, 0.15]}    # security classified correctly
+  data_leak_window_documented:     {weight: 0.10, range: [0, 0.10]}    # postmortem includes window calc
+  legal_handoff_initiated:         {weight: 0.05, range: [0, 0.05]}
+  customer_comm_drafted:           {weight: 0.05, range: [0, 0.05]}
+  postmortem_quality:              {weight: 0.15, range: [0, 0.15]}
+  blast_radius_increase_penalty:   {weight: -0.10, range: [-0.10, 0]}
+
+reference_trajectory_length: 60
+optimal_ticks: 45
+max_ticks: 80
+
+reference_trace:
+  phase_1_recognize_and_contain:
+    - {tick:  1, action: query_metrics(orders-service, error_rate), expected_signal: error rate is normal}
+    - tick: 2
+      action: 'query_logs(sentry)'
+      expected_signal: '"Sentry: distinct_tenant_id_per_session 6sigma anomaly on /api/orders"'
+    - tick: 3
+      action: 'query_session_cardinality(orders-service)'
+      expected_signal: 'confirms cross-tenant pattern'
+    - tick: 4
+      action: 'query_external_dep_status(zendesk-tickets)'
+      expected_signal: '7 tickets in 12 min mentioning "wrong orders"'
+    - tick: 5
+      action: 'submit_hypothesis(rls_regression)'
+      expected_signal: 'security_recognition bonus'
+    - {tick:  6, action: feature_flag_toggle(orders_list_view, off), expected_signal: containment_first bonus + leak window stops}
+    - tick: 7
+      action: 'escalate_security'
+      expected_signal: 'security oncall paged'
+  phase_2_root_cause:
+    - {tick: 12, action: query_audit_log(postgres-primary, recent_migrations), expected_signal: migration 0042-rls-refactor at 13:48 UTC}
+    - tick: 13
+      action: 'query_recent_prs(postgres-primary)'
+      expected_signal: 'PR #5018 includes RLS refactor'
+    - {tick: 14, action: read_diff(postgres-primary, 0042-rls-refactor), expected_signal: USING (tenant_id = auth.uid()) -> USING (TRUE)}
+    - tick: 15
+      action: 'rollback_deploy(orders-service)'
+      expected_signal: 'not enough — RLS lives in DB'
+    - tick: 16
+      action: 'rollback_deploy(postgres-primary)'
+      expected_signal: 'cause_removed correctly'
+    - tick: 17
+      action: 'run_check(rls_policy_correct)'
+      expected_signal: 'green'
+  phase_3_postmortem_and_handoff:
+    - {tick: 18, action: query_session_cardinality(orders-service, window=4h), expected_signal: leak window = 92m, 14 sessions, 3 tenants}
+    - tick: 19
+      action: 'draft_customer_comm'
+      expected_signal: 'customer_comm_drafted bonus'
+    - tick: 20
+      action: 'request_legal_handoff'
+      expected_signal: 'legal_handoff_initiated bonus'
+    - tick: 21
+      action: 'propose_postmortem'
+      expected_signal: 'postmortem_quality bonus (full marks if leak window field populated)'
+    - {tick: 22, action: feature_flag_toggle(orders_list_view, on), expected_signal: containment lifted}
+    - tick: 23
+      action: 'run_check(end_to_end)'
+      expected_signal: 'green'
+    - tick: 24
+      action: 'declare_resolved'
+      expected_signal: 'terminal'
+oncall_peer:
+  enabled: true
+  behaviours:
+    - {trigger: "escalate during phase 1", response: "Reliability metrics are clean. Are you sure this isn't a false alert?", correct_pct: 30, decoy: true}
+    - {trigger: "escalate_security during phase 1", response: "Acknowledged. Toggle the flag, I'll spin up an incident channel.", correct_pct: 95}
+
+success_criteria:
+  - feature_flag_toggled_before_rollback: true
+  - security_classification_in_hypothesis: true
+  - rollback_targeted_postgres_not_orders_only: true
+  - data_leak_window_quantified: true
+  - legal_handoff_initiated: true
+  - customer_communication_drafted: true
+  - postmortem_includes_security_classification: true
+  - end_to_end_check_passes_terminally: true

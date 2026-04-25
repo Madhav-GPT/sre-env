@@ -1,0 +1,218 @@
+# ============================================================================
+# DESIGN-SPEC HEADER (added 2026-04-26 in response to peer review)
+#
+# This compose file describes the 22-service ecommerce-vibecoded-saas
+# topology the Max tier targets. **The stub images referenced below are
+# NOT published.** Do not attempt `docker compose up`: every `docker pull`
+# of `ghcr.io/sre-gym/<service>:1.0` will fail with HTTP 404. Publishing
+# these images is a $1-2k registry-cost commitment that has not been made.
+#
+# The runnable Max-tier surface is the Python state-machine simulator at
+# `sre_gym/max/runner.py`, which builds an in-memory graph from the family
+# spec and applies chaos patterns as state-transition rules. The 11-action
+# interface there is the same as Basic. The simulator is faithful to the
+# pattern signatures but does NOT reproduce real-network failure modes,
+# real Stripe/Supabase API behaviour, or the irreversibility of real cluster
+# actions. Treat this compose file as the authoritative shape an operator
+# would target if they invested in publishing the stub images.
+# ============================================================================
+
+# Max-tier ecommerce family — docker-compose stack.
+#
+# Bringing this up locally:
+#
+#   cd sre_gym/max/compose
+#   docker compose -f ecommerce.yaml up
+#
+# This file is design-complete but the stub images are NOT published in this
+# repo (publishing them is a $1-2k registry-cost commitment that doesn't fit
+# the hackathon-window budget). Downstream operators bringing the Max tier up
+# should treat this file as the authoritative shape and build their own stub
+# images for the external services.
+#
+# Network shape mirrors what a Vercel + Supabase + Stripe + Railway-style SaaS
+# would look like in production: an edge layer, a BFF, a backend-services tier,
+# a worker tier, two postgres instances (primary + replica), two redis
+# instances (sessions + jobs), kafka for events, and stub servers for the
+# external dependencies.
+
+version: "3.9"
+
+x-defaults: &defaults
+  restart: unless-stopped
+  networks: [sre_gym]
+  labels:
+    sre-gym/tier: max
+    sre-gym/family: ecommerce_vibecoded_saas
+
+services:
+
+  # -------- Edge / frontend tier --------
+  vercel-frontend:
+    <<: *defaults
+    image: ghcr.io/sre-gym/vercel-stub:1.0
+    ports: ["3000:3000"]
+    environment:
+      EDGE_REGION: iad1
+      DEPLOY_VERSION: ${DEPLOY_VERSION:-2026.04.25-baseline}
+
+  vercel-edge-fn:
+    <<: *defaults
+    image: ghcr.io/sre-gym/vercel-edge-stub:1.0
+    environment:
+      RUNTIME: edge
+      DEPLOY_VERSION: ${DEPLOY_VERSION:-2026.04.25-baseline}
+
+  # -------- BFF / API gateway --------
+  api-gateway:
+    <<: *defaults
+    image: ghcr.io/sre-gym/api-gateway:1.0
+    depends_on: [postgres-primary, redis-sessions, kafka-events]
+    environment:
+      STRIPE_API_VERSION: "2024-06-20"
+      DEPLOY_VERSION: ${DEPLOY_VERSION:-2026.04.25-baseline}
+
+  # -------- Backend services tier --------
+  orders-service:
+    <<: *defaults
+    image: ghcr.io/sre-gym/orders:1.0
+    depends_on: [postgres-primary, redis-jobs, kafka-events]
+
+  payments-service:
+    <<: *defaults
+    image: ghcr.io/sre-gym/payments:1.0
+    depends_on: [postgres-primary, stripe-stub, kafka-events]
+
+  inventory-service:
+    <<: *defaults
+    image: ghcr.io/sre-gym/inventory:1.0
+    depends_on: [postgres-primary, redis-sessions]
+
+  shipping-service:
+    <<: *defaults
+    image: ghcr.io/sre-gym/shipping:1.0
+    depends_on: [postgres-primary, kafka-events]
+
+  notifications:
+    <<: *defaults
+    image: ghcr.io/sre-gym/notifications:1.0
+    depends_on: [kafka-events]
+
+  search-service:
+    <<: *defaults
+    image: ghcr.io/sre-gym/search:1.0
+    depends_on: [postgres-replica]
+
+  # -------- Worker tier --------
+  worker-orders:
+    <<: *defaults
+    image: ghcr.io/sre-gym/worker-orders:1.0
+    depends_on: [postgres-primary, redis-jobs, kafka-events]
+    deploy: {replicas: 3}
+
+  worker-payments:
+    <<: *defaults
+    image: ghcr.io/sre-gym/worker-payments:1.0
+    depends_on: [postgres-primary, stripe-stub, kafka-events]
+    deploy: {replicas: 2}
+
+  worker-fulfilment:
+    <<: *defaults
+    image: ghcr.io/sre-gym/worker-fulfilment:1.0
+    depends_on: [postgres-primary, kafka-events]
+    deploy: {replicas: 2}
+
+  # -------- Stateful tier --------
+  postgres-primary:
+    <<: *defaults
+    image: postgres:16
+    environment:
+      POSTGRES_DB: sregym
+      POSTGRES_USER: sregym
+      POSTGRES_PASSWORD: sregym
+      # We piggy-back Supabase RLS semantics on top of vanilla postgres via
+      # a bootstrap SQL script that creates the auth schema + RLS-aware roles.
+    volumes:
+      - postgres_primary_data:/var/lib/postgresql/data
+      - ./bootstrap/postgres-supabase-compat.sql:/docker-entrypoint-initdb.d/00-supabase.sql
+
+  postgres-replica:
+    <<: *defaults
+    image: postgres:16
+    depends_on: [postgres-primary]
+    environment:
+      POSTGRES_DB: sregym
+      POSTGRES_USER: sregym
+      POSTGRES_PASSWORD: sregym
+    volumes:
+      - postgres_replica_data:/var/lib/postgresql/data
+
+  redis-sessions:
+    <<: *defaults
+    image: redis:7-alpine
+    command: ["redis-server", "--maxclients", "${REDIS_SESSIONS_MAXCLIENTS:-1024}"]
+
+  redis-jobs:
+    <<: *defaults
+    image: redis:7-alpine
+    command: ["redis-server", "--maxclients", "${REDIS_JOBS_MAXCLIENTS:-1024}"]
+
+  kafka-events:
+    <<: *defaults
+    image: confluentinc/cp-kafka:7.5.0
+    environment:
+      KAFKA_PROCESS_ROLES: "controller,broker"
+      KAFKA_NODE_ID: "1"
+      KAFKA_CONTROLLER_QUORUM_VOTERS: "1@kafka-events:9093"
+
+  # -------- External dependency stubs --------
+  stripe-stub:
+    <<: *defaults
+    image: ghcr.io/sre-gym/stripe-stub:1.0
+    environment:
+      WEBHOOK_DELIVERY_FAILURE_RATE: "${STRIPE_WEBHOOK_FAIL_RATE:-0}"
+
+  supabase-auth-stub:
+    <<: *defaults
+    image: ghcr.io/sre-gym/supabase-auth-stub:1.0
+    environment:
+      INJECTED_RLS_POLICY: "${SUPABASE_RLS_POLICY:-default}"
+
+  posthog-stub:
+    <<: *defaults
+    image: ghcr.io/sre-gym/posthog-stub:1.0
+
+  sentry-stub:
+    <<: *defaults
+    image: ghcr.io/sre-gym/sentry-stub:1.0
+
+  # -------- Chaos controller --------
+  chaos-controller:
+    <<: *defaults
+    image: ghcr.io/sre-gym/chaos-controller:1.0
+    volumes:
+      - ../chaos:/etc/sre-gym/chaos:ro
+    environment:
+      CHAOS_LIBRARY: /etc/sre-gym/chaos/ecommerce_chaos_library.yaml
+      EPISODE_TIMEOUT_S: "${EPISODE_TIMEOUT_S:-1800}"
+      ALLOWED_PATTERNS: "${ALLOWED_PATTERNS:-deploy_regression,dependency_degradation,config_rollout,retry_storm,migration_lock,rls_silent_leak,oauth_supply_chain_pivot,observability_self_denial,secondary_rate_limit,cdn_cache_contamination}"
+      # The controller refuses to inject patterns that aren't in ALLOWED_PATTERNS
+      # so the operator can carve out a safe subset for early-stage training.
+    ports: ["8200:8200"]   # control plane: /reset /step /state for the agent
+
+  # -------- Workload generator --------
+  workload-generator:
+    <<: *defaults
+    image: ghcr.io/sre-gym/workload-generator:1.0
+    depends_on: [api-gateway, orders-service]
+    environment:
+      WORKLOAD_SHAPE: poisson
+      RPS_PROFILE: ../families/ecommerce_vibecoded_saas.yaml
+
+networks:
+  sre_gym:
+    driver: bridge
+
+volumes:
+  postgres_primary_data:
+  postgres_replica_data:
