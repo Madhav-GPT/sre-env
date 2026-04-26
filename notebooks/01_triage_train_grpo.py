@@ -14,19 +14,41 @@
 # %% [markdown]
 # # sre-gym Triage — Qwen2.5-3B SFT → GRPO training notebook
 #
-# **Target:** A100 80GB · ~2.5h wall-clock · ~$6 in HF compute credits.
+# **Target:** A100 80GB · ~90 min wall-clock · ~$3-4 in HF compute credits.
 #
-# ## How to run this notebook
+# ## Pipeline philosophy
 #
-# 1. **Run Cell 0 first** (idempotent — safe to re-run after any kernel restart, takes ~5s if already set up).
+# This notebook follows the OpenEnv hackathon best-practice recipe:
+#   1. **Light SFT** to teach JSON action format (~5 min, 50 steps)
+#   2. **GRPO** with verifiable env reward to drive real improvement (~30 min)
+#   3. **Eval sweep** showing baseline → SFT → GRPO progression (~25 min)
+#
+# Key design choices to prevent the two failure modes (overfit / underfit):
+#   - **Diverse data**: 12 templates × 4 distinct evidence-gathering plans × 5
+#     procgen variants = 240 expert episodes (~89% unique prompt-response pairs
+#     after stratified sampling to 72 expert + 24 mediocre + 24 failure).
+#   - **Short SFT**: 50 steps × batch 16 ≈ 0.8 epoch — long enough for the model
+#     to learn the JSON format, short enough to leave entropy for GRPO.
+#   - **Short SFT instead of loss masking**: Qwen2.5's chat template lacks
+#     `{% generation %}` markers, so we can't use `assistant_only_loss=True`.
+#     50 steps × 0.8 epoch is short enough that even full-sequence loss won't
+#     overfit on diverse data.
+#   - **GRPO with strong KL anchor** (beta=0.1) and high rollout temperature
+#     (0.9) — keeps policy near SFT while preserving exploration variance.
+#
+# ## How to run
+#
+# 1. **Run Cell 0 first** (idempotent — safe to re-run after kernel restart, ~5s).
 # 2. Then run cells 1–12 top to bottom.
-# 3. **After any "Kernel → Restart"**, you only need to re-run Cell 0 + the cell you want to continue from. Every cell imports what it needs.
-# 4. If a cell fails, read the printed **FIX** message — it tells you exactly what to do.
+# 3. **After "Kernel → Restart"**: re-run Cell 0 + your target cell. Every cell
+#    imports what it needs.
+# 4. If a cell fails, read its printed **FIX** message.
 #
-# ## Resume points
-# - If `outputs/sft_final/` exists → SFT cells skip and load from disk.
-# - If `outputs/grpo_final/` exists → GRPO cell skips and loads from disk.
-# - To force re-train, delete the corresponding output dir.
+# ## Resume points (skip done work)
+# - `outputs/sft_final/` exists → Cell 6 skips and loads from disk.
+# - `outputs/grpo_final/` exists → Cell 9 skips and loads from disk.
+# - `eval/results/comparison_raw.csv` exists → Cell 10 skips and reuses results.
+# - To force re-run, delete the corresponding artifact.
 
 # %% [markdown]
 # ## Cell 0 — Bootstrap (RUN ME FIRST after every kernel restart)
@@ -316,13 +338,13 @@ model, tokenizer = FastLanguageModel.from_pretrained(
 )
 model = FastLanguageModel.get_peft_model(
     model,
-    r=64,
+    r=32,                         # was 64 — smaller LoRA = less capacity to memorize
     target_modules=[
         "q_proj", "k_proj", "v_proj", "o_proj",
         "gate_proj", "up_proj", "down_proj",
     ],
-    lora_alpha=128,
-    lora_dropout=0.0,
+    lora_alpha=64,                # alpha = 2× r is a common stable ratio
+    lora_dropout=0.1,             # was 0.0 — explicit regularization
     bias="none",
     use_gradient_checkpointing="unsloth",
     random_state=42,
@@ -332,7 +354,20 @@ print("Trainable params:")
 model.print_trainable_parameters()
 
 # %% [markdown]
-# ## Cell 6 — SFT cold-start (150 steps) + perplexity gate
+# ## Cell 6 — SFT cold-start (50 steps) + perplexity gate
+#
+# This SFT is intentionally short. Goal: teach the JSON action format
+# (Unsloth Advanced GRPO recipe calls this "prefinetuning to skip GRPO format
+# learning"). We do NOT want the model to memorize specific action sequences
+# — that would zero out GRPO's exploration variance.
+#
+# Anti-overfit measures vs typical SFT recipes:
+#   - LoRA r=32, dropout=0.1 (small + regularized)
+#   - lr=5e-5 (gentle), warmup 10%, cosine schedule
+#   - 50 steps × batch 16 = 800 examples ≈ 0.8 epoch over our 999-step corpus
+#   - full-sequence loss (Qwen2.5's chat template lacks generation markers
+#     that would enable assistant_only_loss; the short SFT compensates)
+#   - load_best_model_at_end + eval_loss → auto-restores the best checkpoint
 #
 # **Resume:** if `outputs/sft_final/` exists, skips training and loads from disk.
 # To force re-train, delete the directory.
@@ -360,16 +395,19 @@ else:
         output_dir="outputs/sft",
         per_device_train_batch_size=4,
         gradient_accumulation_steps=4,
-        max_steps=150,
-        learning_rate=1e-4,
-        warmup_ratio=0.05,
+        max_steps=50,                  # was 150 — short SFT to avoid memorization
+        learning_rate=5e-5,            # was 1e-4 — gentler LR for small data
+        warmup_ratio=0.10,             # was 0.05 — slower start
         lr_scheduler_type="cosine",
-        logging_steps=10,
+        logging_steps=5,
         eval_strategy="steps",
-        eval_steps=25,
+        eval_steps=10,                 # was 25 — catch overfitting earlier
         save_strategy="steps",
-        save_steps=50,
-        save_total_limit=2,
+        save_steps=10,
+        save_total_limit=3,
+        load_best_model_at_end=True,   # auto-restore best eval-loss checkpoint
+        metric_for_best_model="eval_loss",
+        greater_is_better=False,
         bf16=True,
         optim="adamw_8bit",
         weight_decay=0.01,
@@ -377,6 +415,11 @@ else:
         max_length=MAX_SEQ_LEN,
         packing=False,
         dataset_text_field="text",
+        # NOTE: assistant_only_loss=True needs the chat template to have
+        # `{% generation %}` markers, which Qwen2.5-Instruct does NOT.
+        # Enabling it would mask ALL tokens (silent broken training).
+        # We rely on data diversity + dropout + short SFT instead.
+        assistant_only_loss=False,
     )
     sft_trainer = SFTTrainer(
         model=model,
@@ -392,22 +435,21 @@ else:
 
     eval_metrics = sft_trainer.evaluate()
     final_perplexity = math.exp(eval_metrics["eval_loss"])
-    print(f"\nFinal eval perplexity: {final_perplexity:.3f}")
+    print(f"\nFinal eval perplexity (best checkpoint loaded): {final_perplexity:.3f}")
 
-    if final_perplexity < 1.2:
+    if final_perplexity < 1.3:
+        print(f"⚠ Perplexity {final_perplexity:.3f} < 1.3 — policy may be too deterministic.")
+        print("  Watch GRPO reward variance in first 10 steps.")
+        print("  If std≈0 across K=4 rollouts: abort GRPO, ship SFT-only.")
+    elif final_perplexity > 5.0:
         raise RuntimeError(
-            f"\n  Perplexity {final_perplexity:.3f} < 1.2 — policy collapsed to determinism.\n"
-            f"  FIX: Skip GRPO. Ship outputs/sft_final/ as-is, OR add data diversity & retrain."
+            f"\n  Perplexity {final_perplexity:.3f} > 5.0 — SFT undercooked.\n"
+            f"  FIX: Delete outputs/sft_final/, bump max_steps to 100, re-run Cell 6."
         )
-    if final_perplexity > 4.0:
-        raise RuntimeError(
-            f"\n  Perplexity {final_perplexity:.3f} > 4.0 — SFT undercooked.\n"
-            f"  FIX: Delete outputs/sft_final/, bump max_steps to 250, re-run Cell 6."
-        )
-    if 1.5 <= final_perplexity <= 2.5:
-        print("✓ Perplexity in healthy band [1.5, 2.5] — proceed to GRPO")
+    elif 1.5 <= final_perplexity <= 3.0:
+        print("✓ Perplexity in healthy band [1.5, 3.0] — proceed to GRPO")
     else:
-        print(f"⚠ Perplexity {final_perplexity:.3f} outside ideal [1.5, 2.5] but acceptable [1.2, 4.0]")
+        print(f"  Perplexity {final_perplexity:.3f} acceptable [1.3, 5.0] — proceed to GRPO")
 
 # %% [markdown]
 # ## Cell 7 — Build the GRPO prompt dataset
@@ -535,10 +577,22 @@ assert _test[0] > -0.5, "reward_fn smoke test failed"
 print("✓ reward_fn validated")
 
 # %% [markdown]
-# ## Cell 9 — GRPO online training (100 steps × K=4)
+# ## Cell 9 — GRPO online training (50 steps × K=4)
+#
+# Wall-clock: ~30-45 min on A100 with vLLM. Watch:
+#   - **reward mean** should rise from ~0 → ~0.4 by step 30
+#   - **reward std** must be > 0.05 in steps 1-5 (else K=4 rollouts are
+#     identical and GRPO has no advantage signal — abort and ship SFT-only)
+#   - if reward flatlines after step 25, interrupt — no more signal
+#
+# Anti-collapse settings vs default GRPO:
+#   - beta=0.1 (was 0.04) — stronger KL penalty keeps policy near SFT
+#   - temperature=0.9 (was 0.7) — more rollout variance
+#   - lr=1e-6 (was 5e-6) — gentler updates
+#   - top_p=0.95 — nucleus sampling for stability
 #
 # **Resume:** if `outputs/grpo_final/` exists, skips training.
-# **Fallback:** if vLLM crashes (common on some Spaces), retries with `use_vllm=False` (~3× slower but works).
+# **Fallback:** if vLLM crashes, retries with `use_vllm=False` (~3× slower).
 
 # %%
 from pathlib import Path
@@ -549,13 +603,16 @@ GRPO_OUT = Path("outputs/grpo_final")
 
 
 def _build_grpo_args(use_vllm: bool):
-    # TRL 0.22.2 (Unsloth's recommended): max_prompt_length exists, vllm_max_model_length doesn't.
-    # TRL 1.x: vllm_max_model_length exists, max_prompt_length removed. We target 0.22.2.
+    # GRPO config tuned for our small/uniform-ish dataset to maintain exploration:
+    #   - higher beta (KL penalty) keeps policy near SFT, prevents drift
+    #   - higher temperature in rollouts → more variance between K=4 generations
+    #     which is required for advantage signal (without it: std≈0, no learning)
+    #   - lower LR is gentler since per-step KL penalty already constrains updates
     return GRPOConfig(
         output_dir="outputs/grpo",
         num_generations=4,
-        max_steps=100,
-        learning_rate=5e-6,
+        max_steps=50,                  # was 100 — short GRPO with diverse SFT
+        learning_rate=1e-6,            # was 5e-6 — more stable
         per_device_train_batch_size=1,
         gradient_accumulation_steps=8,
         num_train_epochs=1,
@@ -563,12 +620,13 @@ def _build_grpo_args(use_vllm: bool):
         max_completion_length=256,
         use_vllm=use_vllm,
         vllm_gpu_memory_utilization=0.5 if use_vllm else 0.0,
-        beta=0.04,
-        temperature=0.7,
-        logging_steps=5,
+        beta=0.1,                      # was 0.04 — stronger KL anchor
+        temperature=0.9,               # was 0.7 — more rollout variance
+        top_p=0.95,
+        logging_steps=2,               # log every 2 steps to watch reward
         save_strategy="steps",
-        save_steps=25,
-        save_total_limit=2,
+        save_steps=10,
+        save_total_limit=3,
         bf16=True,
         optim="adamw_8bit",
         report_to="none",

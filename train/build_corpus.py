@@ -390,7 +390,9 @@ def _bucket(ep: dict, expert: list, mediocre: list, failure: list) -> None:
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Build the v2 SFT corpus.")
     parser.add_argument("--output", type=Path, default=DATA_DIR / "seed_v2_120.jsonl")
-    parser.add_argument("--sonnet-jsonl", type=Path, default=DATA_DIR / "sonnet_missing6.jsonl")
+    parser.add_argument("--sonnet-jsonl", type=Path, default=DATA_DIR / "sonnet_diverse.jsonl",
+                        help="Diverse expert trajectories from train/run_expert_collection.py "
+                             "(120 ep × 4 plans/template). Falls back to sonnet_missing6.jsonl.")
     parser.add_argument("--target-expert", type=int, default=72)
     parser.add_argument("--target-mediocre", type=int, default=24)
     parser.add_argument("--target-failure", type=int, default=24)
@@ -412,13 +414,20 @@ def main(argv: list[str] | None = None) -> int:
             _bucket(ep, expert, mediocre, failure)
     print(f"        existing -> {len(expert)} expert, {len(mediocre)} mediocre, {len(failure)} failure")
 
-    print(f"[2/5] Loading Sonnet missing-6 trajectories from {args.sonnet_jsonl} ...")
-    if args.sonnet_jsonl.exists():
-        for ep in rescore_existing_jsonl(args.sonnet_jsonl, batch_prefix=f"corpus_v2_sonnet_{today}"):
+    sonnet_path = args.sonnet_jsonl
+    if not sonnet_path.exists():
+        legacy = DATA_DIR / "sonnet_missing6.jsonl"
+        if legacy.exists():
+            print(f"[2/5] {sonnet_path.name} not found, falling back to {legacy.name}")
+            sonnet_path = legacy
+
+    print(f"[2/5] Loading expert trajectories from {sonnet_path} ...")
+    if sonnet_path.exists():
+        for ep in rescore_existing_jsonl(sonnet_path, batch_prefix=f"corpus_v2_sonnet_{today}"):
             _bucket(ep, expert, mediocre, failure)
         print(f"        sonnet   -> {len(expert)} expert, {len(mediocre)} mediocre, {len(failure)} failure")
     else:
-        print("        not found — run train/collect_sonnet_missing6.py on a laptop and copy the JSONL into train/data/")
+        print("        not found — run `python train/run_expert_collection.py` first")
 
     print("[3/5] Topping up expert tier with scripted-optimal replays ...")
     extra_scenarios: list[str] = []
@@ -479,9 +488,35 @@ def main(argv: list[str] | None = None) -> int:
         syn_idx += 1
     print(f"        failure  -> {len(failure)} failure")
 
-    expert = expert[: args.target_expert]
-    mediocre = mediocre[: args.target_mediocre]
-    failure = failure[: args.target_failure]
+    # Stratified sampling — ensure each template gets >= floor(target / 12)
+    # episodes, then fill remaining slots randomly. Without this, the simple
+    # truncation `expert[:72]` would over-represent the first few templates
+    # in the loading order.
+    def _stratify(pool: list[dict], target: int) -> list[dict]:
+        if len(pool) <= target:
+            return pool
+        rng_strat = random.Random(args.seed + 99)
+        by_t: dict[str, list[dict]] = {}
+        for ep in pool:
+            by_t.setdefault(ep["template_id"], []).append(ep)
+        # Shuffle each bucket
+        for bucket in by_t.values():
+            rng_strat.shuffle(bucket)
+        per_template = max(1, target // max(len(by_t), 1))
+        chosen: list[dict] = []
+        for bucket in by_t.values():
+            chosen.extend(bucket[:per_template])
+        # Fill remaining slots from leftovers (round-robin to keep balance)
+        leftovers: list[dict] = []
+        for bucket in by_t.values():
+            leftovers.extend(bucket[per_template:])
+        rng_strat.shuffle(leftovers)
+        chosen.extend(leftovers[: max(0, target - len(chosen))])
+        return chosen[:target]
+
+    expert = _stratify(expert, args.target_expert)
+    mediocre = _stratify(mediocre, args.target_mediocre)
+    failure = _stratify(failure, args.target_failure)
     all_episodes = expert + mediocre + failure
 
     by_template: dict[str, int] = {}
