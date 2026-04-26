@@ -53,12 +53,20 @@
 # %% [markdown]
 # ## Cell 0 — Bootstrap (RUN ME FIRST after every kernel restart)
 #
-# Idempotent. Detects state and only does what's needed:
-# - First run: clone repo, install deps (~3 min)
-# - After kernel restart: re-import, re-chdir (~5 sec)
-# - Re-run within same session: no-op (<1 sec)
+# Uses Unsloth's official `uv pip install` recipe with version pins that the
+# Unsloth team has tested. Idempotent:
+#   - First run on fresh Space: ~8-12 min (mostly downloading vLLM/torch)
+#   - After kernel restart (deps still on disk): ~3-5 sec
+#   - Re-run within same session: <1 sec
+#
+# **Pinned versions (DO NOT CHANGE without reading why):**
+#   - `torch>=2.8.0` + `triton>=3.4.0` — Unsloth's tested CUDA stack
+#   - `transformers==4.56.2` — required by Unsloth's chat template patches
+#   - `trl==0.22.2` — has SFTConfig.assistant_only_loss + GRPOConfig.beta API
+#   - `unsloth` from git — latest patches (the published wheel lags weeks)
 
 # %%
+import importlib.util
 import os
 import subprocess
 import sys
@@ -70,10 +78,10 @@ BRANCH      = "main"
 
 # ---- Step 1: ensure cwd is the repo root ----
 if Path("sre_gym").exists() and Path("notebooks").exists():
-    print(f"Already in repo root: {Path('.').resolve()}")
+    print(f"✓ Already in repo root: {Path('.').resolve()}")
 elif Path(REPO_NAME).exists():
     os.chdir(REPO_NAME)
-    print(f"Changed to repo root: {Path('.').resolve()}")
+    print(f"✓ Changed to repo root: {Path('.').resolve()}")
 else:
     token = os.environ.get("GITHUB_TOKEN", "").strip()
     if token:
@@ -84,54 +92,78 @@ else:
         print("Cloning public repo ...")
     subprocess.check_call(["git", "clone", "--depth=1", "--branch", BRANCH, url, REPO_NAME])
     os.chdir(REPO_NAME)
-    print(f"Cloned to: {Path('.').resolve()}")
+    print(f"✓ Cloned to: {Path('.').resolve()}")
 
 REPO_ROOT = Path(".").resolve()
 assert (REPO_ROOT / "sre_gym").exists(), "Wrong cwd — sre_gym/ not found"
-
-# Make repo importable from anywhere
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-# ---- Step 2: install deps (idempotent — checks before installing) ----
-def _all_installed(pkgs):
-    for pkg in pkgs:
-        try:
-            __import__(pkg)
-        except ImportError:
-            return False
-    return True
+# ---- Step 2: install deps (idempotent — checks first, installs only if missing) ----
+def _have(pkg: str) -> bool:
+    return importlib.util.find_spec(pkg) is not None
 
-REQUIRED = ["unsloth", "trl", "vllm", "datasets", "transformers", "matplotlib", "pandas"]
-if _all_installed(REQUIRED):
-    print("All deps already installed — skipping pip install")
+REQUIRED = ["unsloth", "trl", "vllm", "datasets", "transformers",
+            "matplotlib", "pandas", "httpx", "fastapi"]
+
+if all(_have(p) for p in REQUIRED) and _have("unified_incident_env"):
+    print("✓ All deps already installed — skipping (~3s)")
 else:
-    # Fallback path for users who haven't pre-installed via Unsloth's pattern.
-    # If you're using Unsloth's official install in a separate cell, this branch
-    # never runs.
-    print("Installing deps — this is 8-15 min on first run.")
-    subprocess.check_call([sys.executable, "-m", "pip", "install", "--upgrade", "pip"])
-    subprocess.check_call([sys.executable, "-m", "pip", "install", "--no-deps", "-e", "."])
-    subprocess.check_call([sys.executable, "-m", "pip", "install",
-                            "unsloth", "trl", "vllm",
-                            "datasets", "accelerate", "matplotlib", "pandas",
-                            "httpx", "fastapi", "pydantic>=2.0"])
-    print("\n✓ Deps installed")
+    print("Installing deps via Unsloth's uv pattern — first run is ~10 min on a fresh Space.")
+    print("Progress prints below. If no new lines for >2 min, check `ps aux | grep uv` in Terminal.\n")
 
-# ---- Step 3: GPU sanity check via nvidia-smi (before importing torch) ----
+    # Step 2a: install uv (fast pip replacement Unsloth uses).
+    subprocess.check_call([sys.executable, "-m", "pip", "install", "--upgrade", "-qqq", "uv"])
+
+    # Match the user's existing numpy if any (avoids unnecessary reinstall).
+    try:
+        import numpy
+        get_numpy = f"numpy=={numpy.__version__}"
+    except ImportError:
+        get_numpy = "numpy"
+
+    # Step 2b: Unsloth's official core stack — single resolution pass with all
+    # heavy packages so uv finds a coherent version set in one go.
+    subprocess.check_call([
+        "uv", "pip", "install", "-qqq", "--system",
+        "torch>=2.8.0", "triton>=3.4.0", get_numpy, "torchvision", "bitsandbytes",
+        "transformers==4.56.2", "trackio",
+        "unsloth_zoo[base] @ git+https://github.com/unslothai/unsloth-zoo",
+        "unsloth[base] @ git+https://github.com/unslothai/unsloth",
+        # Extras for our pipeline. Resolved together so vllm doesn't fight transformers.
+        "vllm", "datasets", "accelerate", "matplotlib", "pandas",
+        "httpx", "fastapi", "pydantic>=2.0",
+    ])
+
+    # Step 2c: pin Unsloth's exact versions (--no-deps so we don't pull a
+    # different transformers/tokenizers via dep resolution from another pkg).
+    subprocess.check_call([
+        "uv", "pip", "install", "--system", "--upgrade", "--no-deps",
+        "transformers==4.56.2", "tokenizers", "trl==0.22.2", "unsloth", "unsloth_zoo",
+    ])
+
+    # Step 2d: install the repo itself without re-resolving deps.
+    subprocess.check_call([
+        sys.executable, "-m", "pip", "install", "--no-deps", "-e", ".",
+    ])
+
+    print("\n✓ All dependencies installed")
+
+# ---- Step 3: GPU sanity check via nvidia-smi (BEFORE importing torch) ----
+# nvidia-smi has clearer error messages than torch.cuda.is_available()
 gpu = subprocess.run(
     ["nvidia-smi", "--query-gpu=name,memory.total,driver_version", "--format=csv,noheader,nounits"],
     capture_output=True, text=True,
 )
 if gpu.returncode != 0:
     raise RuntimeError(
-        "\n\n  nvidia-smi failed — this Space has NO GPU.\n"
+        "\n  nvidia-smi failed — this Space has NO GPU.\n"
         "  FIX: Space → Settings → 'Space hardware' → 'Nvidia A100 Large 80GB' → Save\n"
         "  Then wait ~2 min for the Space to restart and re-run this cell.\n"
     )
 print(f"\nGPU: {gpu.stdout.strip()}")
 print(f"Repo root: {REPO_ROOT}")
-print("✓ Cell 0 complete — proceed to Cell 1")
+print("\n✓ Cell 0 complete — proceed to Cell 1")
 
 # %% [markdown]
 # ## Cell 1 — Verify PyTorch sees the GPU
@@ -153,10 +185,13 @@ if not torch.cuda.is_available():
         f"\n\n  PyTorch can't see the GPU.\n"
         f"  GPU driver: {drv}\n"
         f"  PyTorch built for CUDA: {torch.version.cuda}\n\n"
-        f"  FIX: CUDA version mismatch. In a NEW cell run:\n"
-        f"    !pip uninstall -y torch torchvision torchaudio\n"
-        f"    !pip install torch==2.4.1 torchvision==0.19.1 --index-url https://download.pytorch.org/whl/cu121\n"
-        f"  Then: Kernel → Restart Kernel → re-run Cell 0 → re-run Cell 1.\n"
+        f"  FIX: CUDA driver doesn't support PyTorch's CUDA build.\n"
+        f"  This is rare on HF Spaces with A100 — usually means the Space\n"
+        f"  hardware was changed mid-run. Try:\n"
+        f"    1. Settings → Space hardware: confirm 'A100 Large 80GB'\n"
+        f"    2. Restart Space (factory reset, not just kernel)\n"
+        f"    3. Re-open notebook, run Cell 0 from scratch\n"
+        f"  Do NOT downgrade torch — Unsloth requires torch>=2.8.0.\n"
     )
 
 device_name = torch.cuda.get_device_name(0)
@@ -320,8 +355,10 @@ sft_dataset = sft_dataset.shuffle(seed=42)
 print(f"\n✓ Built SFT dataset: {len(sft_dataset)} examples")
 
 # %% [markdown]
-# ## Cell 5 — Load Qwen2.5-3B (4-bit + LoRA r=64)
+# ## Cell 5 — Load Qwen2.5-3B-Instruct (4-bit + LoRA r=32)
 #
+# Smaller LoRA (r=32 vs r=64 in typical recipes) — less capacity to memorize
+# our 999-step corpus. lora_dropout=0.1 adds explicit regularization.
 # Skips download if already cached. ~3 min cold, <30 sec warm.
 
 # %%
@@ -669,8 +706,14 @@ else:
 # %% [markdown]
 # ## Cell 10 — Eval comparison sweep
 #
-# 5 policies × 12 holdout × 3 seeds = 180 episodes. Saves to
+# Up to 5 policies × 12 holdout × 3 seeds. Saves to
 # `eval/results/comparison_raw.csv`. Skips if results already exist.
+#
+# **Robust to missing artifacts:**
+#   - If `outputs/grpo_final/` doesn't exist (user skipped GRPO due to
+#     collapse), the GRPO row is omitted automatically.
+#   - If loading SFT-only as a second model fails (OOM), the SFT-only row is
+#     omitted and we still report random/heuristic/scripted/grpo.
 
 # %%
 import json
@@ -679,6 +722,7 @@ import sys
 from pathlib import Path
 
 import pandas as pd
+import torch
 from unsloth import FastLanguageModel
 
 if str(Path(".").resolve()) not in sys.path:
@@ -691,6 +735,27 @@ from unified_incident_env.server.challenge import list_baselines
 EVAL_CSV = Path("eval/results/comparison_raw.csv")
 MAX_SEQ_LEN = 4096
 
+# System prompt — duplicated from Cell 4 so this cell is self-contained
+# (survives kernel restart if user re-runs only this cell after Cell 0).
+SFT_SYSTEM_PROMPT = """You are a senior SRE on-call agent inside the sre-gym Triage environment.
+
+Output EXACTLY one JSON object per turn — no prose, no markdown, no fences.
+The 11 actions are:
+  query_logs(service)            query_metrics(service, metric)
+  query_dependencies(service)    query_deploys(service)
+  rollback_deploy(service)       restart_service(service)
+  isolate_service(service)       run_check(check_name)
+  submit_hypothesis(hypothesis)  escalate
+  declare_resolved
+
+Services: api-gateway / cache / database / worker.
+metric in {cpu, error_rate, latency}; check_name in {database_recovery, end_to_end}.
+
+A successful episode looks like: gather evidence -> submit_hypothesis -> rollback ->
+restart -> both run_checks pass -> declare_resolved. Wrong rollback / premature
+restart / premature declare_resolved are penalized. Repeated identical hypotheses
+score 0."""
+
 if EVAL_CSV.exists():
     results_df = pd.read_csv(EVAL_CSV)
     print(f"✓ Eval already done — loaded {len(results_df)} rows from {EVAL_CSV}")
@@ -699,17 +764,31 @@ else:
     HOLDOUT_SCENARIOS = holdout["scenario_ids"]
     print(f"Holdout: {len(HOLDOUT_SCENARIOS)} scenarios")
 
-    # Switch GRPO model to inference mode
+    # Detect what models we have
+    has_grpo = Path("outputs/grpo_final/adapter_model.safetensors").exists()
+    has_sft  = Path("outputs/sft_final/adapter_model.safetensors").exists()
+    print(f"SFT artifact: {'✓' if has_sft else '✗'}   GRPO artifact: {'✓' if has_grpo else '✗'}")
+
+    # Switch active model to inference mode (whichever was last trained)
     FastLanguageModel.for_inference(model)
 
-    # Load SFT-only adapter into a separate model
-    sft_only_model, _ = FastLanguageModel.from_pretrained(
-        model_name="outputs/sft_final",
-        max_seq_length=MAX_SEQ_LEN,
-        load_in_4bit=True,
-        dtype=None,
-    )
-    FastLanguageModel.for_inference(sft_only_model)
+    # Try to load SFT-only as a second model for comparison.
+    # If it OOMs or any other error, we skip the SFT-only row.
+    sft_only_model = None
+    if has_sft and has_grpo:
+        try:
+            sft_only_model, _ = FastLanguageModel.from_pretrained(
+                model_name="outputs/sft_final",
+                max_seq_length=MAX_SEQ_LEN,
+                load_in_4bit=True,
+                dtype=None,
+            )
+            FastLanguageModel.for_inference(sft_only_model)
+            print("✓ Loaded SFT-only adapter for comparison")
+        except (RuntimeError, torch.cuda.OutOfMemoryError) as exc:
+            print(f"⚠ Could not load SFT-only model ({exc}) — skipping that comparison row")
+            sft_only_model = None
+            torch.cuda.empty_cache()
 
     def _extract_json(text):
         text = text.strip()
@@ -797,25 +876,24 @@ else:
             return a
         return policy
 
+    def _row(policy, sid, seed, obs):
+        return {"policy": policy, "scenario_id": sid, "seed": seed,
+                "final_score": obs.final_score, "incident_resolved": obs.incident_resolved,
+                "steps": obs.tick_count}
+
+    # Determine final model label based on what was trained
+    final_model_label = "qwen25-3b-grpo" if has_grpo else "qwen25-3b-sft"
+
     results = []
     for sid in HOLDOUT_SCENARIOS:
         print(f"  {sid} ...")
         for seed in range(3):
-            obs = run_callable(sid, seed, random_policy)
-            results.append({"policy":"random","scenario_id":sid,"seed":seed,
-                            "final_score":obs.final_score,"incident_resolved":obs.incident_resolved,"steps":obs.tick_count})
-            obs = run_callable(sid, seed, heuristic_policy)
-            results.append({"policy":"heuristic","scenario_id":sid,"seed":seed,
-                            "final_score":obs.final_score,"incident_resolved":obs.incident_resolved,"steps":obs.tick_count})
-            obs = run_callable(sid, seed, scripted_for(sid))
-            results.append({"policy":"scripted_optimal","scenario_id":sid,"seed":seed,
-                            "final_score":obs.final_score,"incident_resolved":obs.incident_resolved,"steps":obs.tick_count})
-            obs = run_lm(sid, seed, sft_only_model)
-            results.append({"policy":"qwen25-3b-sft-only","scenario_id":sid,"seed":seed,
-                            "final_score":obs.final_score,"incident_resolved":obs.incident_resolved,"steps":obs.tick_count})
-            obs = run_lm(sid, seed, model)
-            results.append({"policy":"qwen25-3b-grpo","scenario_id":sid,"seed":seed,
-                            "final_score":obs.final_score,"incident_resolved":obs.incident_resolved,"steps":obs.tick_count})
+            results.append(_row("random",            sid, seed, run_callable(sid, seed, random_policy)))
+            results.append(_row("heuristic",         sid, seed, run_callable(sid, seed, heuristic_policy)))
+            results.append(_row("scripted_optimal", sid, seed, run_callable(sid, seed, scripted_for(sid))))
+            if sft_only_model is not None:
+                results.append(_row("qwen25-3b-sft-only", sid, seed, run_lm(sid, seed, sft_only_model)))
+            results.append(_row(final_model_label,    sid, seed, run_lm(sid, seed, model)))
 
     results_df = pd.DataFrame(results)
     EVAL_CSV.parent.mkdir(parents=True, exist_ok=True)
@@ -864,14 +942,17 @@ plt.tight_layout()
 plt.savefig("eval/results/comparison_hero.png", dpi=150)
 plt.show()
 
+# Per-template plot — uses only the policies actually present in the results
 fig, ax = plt.subplots(figsize=(13, 6))
 template_ids = sorted({s.split("__")[0] for s in HOLDOUT_SCENARIOS})
 positions = list(range(len(template_ids)))
-for offset, policy in enumerate(["random","heuristic","scripted_optimal","qwen25-3b-sft-only","qwen25-3b-grpo"]):
+policies_present = list(summary.index)        # dynamic — survives missing rows
+bar_width = 0.8 / max(len(policies_present), 1)
+for offset, policy in enumerate(policies_present):
     sub = results_df[results_df.policy == policy]
     means = [sub[sub.scenario_id.str.startswith(t)]["final_score"].mean() for t in template_ids]
-    ax.bar([p + offset * 0.15 for p in positions], means, width=0.15, label=policy)
-ax.set_xticks([p + 0.30 for p in positions])
+    ax.bar([p + offset * bar_width for p in positions], means, width=bar_width, label=policy)
+ax.set_xticks([p + bar_width * len(policies_present) / 2 for p in positions])
 ax.set_xticklabels(template_ids, rotation=30, ha="right")
 ax.set_ylabel("Mean final_score")
 ax.legend(fontsize=8)
@@ -888,19 +969,19 @@ plt.show()
 
 # %%
 import subprocess
+from pathlib import Path
 
-subprocess.check_call([
-    "tar", "czf", "artifacts.tar.gz",
-    "outputs/sft_final",
-    "outputs/grpo_final",
-    "eval/results",
-])
-print("\n✓ Artifacts packaged: artifacts.tar.gz")
-print()
-print("Contents:")
-print("  outputs/sft_final/    — SFT-only LoRA adapter")
-print("  outputs/grpo_final/   — GRPO-trained LoRA adapter (the headline result)")
-print("  eval/results/         — comparison_raw.csv, summary.csv, hero.png, per_template.png")
-print()
-print("Right-click artifacts.tar.gz in JupyterLab's file panel → Download.")
-print("Then upload to your private HF repo.")
+# Only include directories that actually exist (handles SFT-only / GRPO-only runs)
+to_archive = [p for p in ["outputs/sft_final", "outputs/grpo_final", "eval/results"]
+              if Path(p).exists()]
+
+if not to_archive:
+    print("⚠ Nothing to archive — no SFT, GRPO, or eval results found")
+else:
+    subprocess.check_call(["tar", "czf", "artifacts.tar.gz"] + to_archive)
+    print(f"\n✓ Artifacts packaged: artifacts.tar.gz")
+    print(f"\nContents:")
+    for p in to_archive:
+        print(f"  {p}")
+    print(f"\nRight-click artifacts.tar.gz in JupyterLab's file panel → Download.")
+    print("Then upload to your private HF repo.")
