@@ -395,7 +395,7 @@ gradio-app::before {
 .sg-tier-card button {
   display: block !important;
   padding: 14px 16px !important;
-  background: #1f2630 !important;                  /* match input bg */
+  background: #000000 !important;                  /* pure black per design spec */
   border: 1px solid var(--border-strong) !important;
   color: var(--text-secondary) !important;
   font-family: var(--mono) !important; font-size: 11.5px !important;
@@ -419,16 +419,16 @@ gradio-app::before {
   line-height: 2 !important;
 }
 .sg-tier-card button:hover {
-  background: #252d38 !important;
+  background: #0a0e14 !important;                  /* slightly lifted black on hover */
   border-color: var(--border-focus) !important;
 }
 .sg-tier-card-selected button {
-  background: rgba(126, 231, 135, 0.06) !important;        /* phosphor wash */
+  background: #000000 !important;                  /* still black, but with phosphor accent */
   border-color: var(--brand) !important;
-  box-shadow: inset 3px 0 0 var(--brand) !important;
+  box-shadow: inset 3px 0 0 var(--brand), 0 0 12px rgba(126, 231, 135, 0.10) !important;
 }
 .sg-tier-card-selected button::first-line {
-  color: var(--brand) !important;                          /* matches header brand */
+  color: var(--brand) !important;                  /* phosphor — matches header brand */
 }
 
 /* ─── TERMINAL ────────────────────────────────────────────────────────── */
@@ -1187,7 +1187,7 @@ def build_app() -> gr.Blocks:
                 with gr.Column(elem_classes=["sg-tier-list"]):
                     basic_card = gr.Button(
                         value=(
-                            "● BASIC\n"
+                            "TRIAGE\n"
                             "escalates compute · 12 templates × 5 procgen variants · "
                             "single bounded incident"
                         ),
@@ -1195,7 +1195,7 @@ def build_app() -> gr.Blocks:
                     )
                     advanced_card = gr.Button(
                         value=(
-                            "○ ADVANCED\n"
+                            "STRATEGY\n"
                             "escalates horizon · chained incidents · "
                             "persistent state across episodes"
                         ),
@@ -1203,7 +1203,7 @@ def build_app() -> gr.Blocks:
                     )
                     max_card = gr.Button(
                         value=(
-                            "○ MAX\n"
+                            "OPERATIONS\n"
                             "escalates realism · 22-service ecommerce sim · "
                             "11 chaos patterns"
                         ),
