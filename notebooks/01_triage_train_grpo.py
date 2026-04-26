@@ -104,7 +104,12 @@ def _have(pkg: str) -> bool:
     return importlib.util.find_spec(pkg) is not None
 
 REQUIRED = ["unsloth", "trl", "vllm", "datasets", "transformers",
-            "matplotlib", "pandas", "httpx", "fastapi"]
+            "matplotlib", "pandas", "httpx", "fastapi",
+            "openenv",        # provided by openenv-core — used by unified_incident_env.client
+            "uvicorn",        # used by openenv FastAPI server layer
+            "websockets",     # used by openenv WS transport
+            "yaml",           # provided by PyYAML — used by scenario config loaders
+            ]
 
 if all(_have(p) for p in REQUIRED) and _have("unified_incident_env"):
     print("✓ All deps already installed — skipping (~3s)")
@@ -133,6 +138,12 @@ else:
         # Extras for our pipeline. Resolved together so vllm doesn't fight transformers.
         "vllm", "datasets", "accelerate", "matplotlib", "pandas",
         "httpx", "fastapi", "pydantic>=2.0",
+        # Repo's own deps — without these, unified_incident_env.client fails:
+        "openenv-core>=0.2.1",      # provides `openenv.core` namespace
+        "uvicorn[standard]>=0.30.0",
+        "websockets>=12.0",
+        "pyyaml>=6.0",
+        "rich>=13.0.0",
     ])
 
     # Step 2c: pin Unsloth's exact versions (--no-deps so we don't pull a
