@@ -839,8 +839,12 @@ else:
             )
             FastLanguageModel.for_inference(sft_only_model)
             print("✓ Loaded SFT-only adapter for comparison")
-        except (RuntimeError, torch.cuda.OutOfMemoryError) as exc:
-            print(f"⚠ Could not load SFT-only model ({exc}) — skipping that comparison row")
+        except Exception as exc:
+            # Catches OOM, ImportError (peft/transformers mismatch on tensor-parallel
+            # imports), AttributeError (Unsloth + adapter mismatch), etc. Eval still
+            # runs with 4 policies (random, heuristic, scripted, GRPO) instead of 5.
+            print(f"⚠ Could not load SFT-only model ({type(exc).__name__}: {exc})")
+            print("  Skipping SFT-vs-GRPO comparison row; eval proceeds with 4 policies.")
             sft_only_model = None
             torch.cuda.empty_cache()
 
