@@ -116,7 +116,7 @@ training:
     templates_covered: 12                 # all 12 Triage templates have ≥5 episodes
 
 huggingface:
-  space_id: Madhav189/sre-env             # canonical HF Space
-  github_repo: Madhav-GPT/sre-env         # canonical GitHub
+  space_id: Madhav189/SystemTruth             # canonical HF Space
+  github_repo: Madhav-GPT/SystemTruth         # canonical GitHub
   sdk: docker
   hardware: cpu-basic

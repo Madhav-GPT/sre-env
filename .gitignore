@@ -29,3 +29,6 @@ eval/results/*.png
 eval/results/*.jsonl
 !eval/results/.gitkeep
 !eval/results/README.md
+# Exception: keep the canonical charts referenced from README/BLOG
+!eval/results/qwen25_7b_comparison_hero.png
+!eval/results/qwen25_7b_comparison_per_template.png

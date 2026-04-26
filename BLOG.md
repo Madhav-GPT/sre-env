@@ -1,12 +1,12 @@
 ---
-title: "sre-gym — three tiers of SRE incident-response, one rubric that won't let you fake it"
+title: "SystemTruth — three tiers of SRE incident-response, one rubric that won't let you fake it"
 thumbnail: docs/blog/hero_three_tiers.png
 authors:
   - user: Madhav189
   - user: dakshdoesdev
 ---
 
-# sre-gym — three tiers of SRE incident-response, one rubric that won't let you fake it
+# SystemTruth — three tiers of SRE incident-response, one rubric that won't let you fake it
 
 **TL;DR**
 
@@ -18,7 +18,7 @@ authors:
 
 ## Why this matters (read this first)
 
-Calibrated incident-response is the capability gap. Every general-purpose LLM is bad at it: they hallucinate confident root causes, over-trust the loudest signal, skip verification, and declare incidents resolved before checking anything. Those failure modes are invisible in chat demos and catastrophic in production. **sre-gym makes them legible enough to measure, then small enough to fix** — and exposes the env via the OpenEnv contract so any RL stack can train against it.
+Calibrated incident-response is the capability gap. Every general-purpose LLM is bad at it: they hallucinate confident root causes, over-trust the loudest signal, skip verification, and declare incidents resolved before checking anything. Those failure modes are invisible in chat demos and catastrophic in production. **SystemTruth makes them legible enough to measure, then small enough to fix** — and exposes the env via the OpenEnv contract so any RL stack can train against it.
 
 We treat incident-response as a small **world-modelling** problem: the agent has to maintain a hidden-state estimate of which service is actually broken, update it from noisy observations, and commit to irreversible actions under uncertainty. The 5-component rubric grades the *mechanical signature* of that loop — evidence first, hypothesis with calibrated confidence, remediation, verification, only then resolution — instead of rewarding output that merely looks right.
 
@@ -37,7 +37,7 @@ ollama pull llama3.2
 python -m sre_gym.local triage worker_deploy_cascade
 ```
 
-The CLI drives `UnifiedIncidentEnvironment` directly and prints per-tick reward, the 5-component score breakdown, and a final summary. Same code path as the HF Space at `https://huggingface.co/spaces/Madhav189/sre-env` — just without the Gradio UI in front of it.
+The CLI drives `UnifiedIncidentEnvironment` directly and prints per-tick reward, the 5-component score breakdown, and a final summary. Same code path as the HF Space at `https://huggingface.co/spaces/Madhav189/SystemTruth` — just without the Gradio UI in front of it.
 
 ## Three tiers, three bottlenecks
 
@@ -197,12 +197,12 @@ Reading post-mortems, not blog posts. Fly.io's gossip-protocol deadlock from Oct
 
 The Triage env is live. Pick a scenario, pick a model provider, watch each tick stream the action, env response, reward delta, and rubric breakdown.
 
-<iframe src="https://Madhav189-sre-env.hf.space" frameborder="0" width="100%" height="800"></iframe>
+<iframe src="https://Madhav189-SystemTruth.hf.space" frameborder="0" width="100%" height="800"></iframe>
 
 For the per-tier deep dives: [`docs/TRIAGE_TIER.md`](docs/TRIAGE_TIER.md) · [`docs/STRATEGY_TIER.md`](docs/STRATEGY_TIER.md) · [`docs/OPERATIONS_TIER.md`](docs/OPERATIONS_TIER.md). For the rubric defense: [`docs/REWARD_DESIGN.md`](docs/REWARD_DESIGN.md). For the architectural narrative: [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md). For the operator guide: [`execution.md`](execution.md). The training notebook lives at [`notebooks/01_triage_train_grpo_qwen25_7b.ipynb`](notebooks/01_triage_train_grpo_qwen25_7b.ipynb).
 
 ## The claim
 
-sre-gym is the first SRE training environment that grades calibrated confidence as a first-class signal. The rubric tells you exactly where your model is bluffing — to two decimal places, on every commit, with a CI invariant that fails the build if the heuristic ceiling drifts out of band. Train against it and the hidden-state estimate inside your model gets sharper episode by episode. Skip the rubric and your agent stays a chat-window demo.
+SystemTruth is the first SRE training environment that grades calibrated confidence as a first-class signal. The rubric tells you exactly where your model is bluffing — to two decimal places, on every commit, with a CI invariant that fails the build if the heuristic ceiling drifts out of band. Train against it and the hidden-state estimate inside your model gets sharper episode by episode. Skip the rubric and your agent stays a chat-window demo.
 
 Built for the OpenEnv-class hackathon, India 2026 — by the Madhav-GPT / dakshdoesdev team. Apache 2.0.

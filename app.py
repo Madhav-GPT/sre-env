@@ -84,9 +84,9 @@ TIER_DEFAULT_MODEL: dict[str, str] = {
 
 
 TIER_DESCRIPTION: dict[str, str] = {
-    "basic":    "escalates compute · 12 templates × 5 procgen variants · single bounded incident",
-    "advanced": "escalates horizon · chained incidents · persistent state across episodes",
-    "max":      "escalates realism · 22-service ecommerce sim · 11 chaos patterns",
+    "basic":    "Triage tier · escalates compute · 12 templates × 5 procgen variants · single bounded incident",
+    "advanced": "Strategy tier · escalates horizon · chained incidents · persistent state across episodes",
+    "max":      "Operations tier · escalates realism · 22-service ecommerce sim · 11 chaos patterns",
 }
 
 
@@ -334,36 +334,41 @@ gradio-app::before {
 }
 .sg-panel-label::before { content: '▸'; color: var(--brand); }
 
-/* ─── INPUTS — token / model / provider key ──────────────────────────── */
+/* ─── INPUTS — token / model / provider key (LIGHTER + BIGGER) ───────── */
 .sg-panel-col .form, .sg-panel-col .block { background: transparent !important; }
 .sg-panel-col input,
 .sg-panel-col textarea,
 .sg-panel-col select {
-  background: var(--bg-input) !important;
-  border: 1px solid var(--border) !important;
+  background: #1f2630 !important;                  /* lighter than the panel */
+  border: 1px solid var(--border-strong) !important;
   color: var(--text-primary) !important;
-  font-family: var(--mono) !important; font-size: 12px !important;
-  padding: 8px 10px !important; border-radius: 0 !important;
+  font-family: var(--mono) !important;
+  font-size: 13px !important;                      /* was 12 */
+  padding: 12px 14px !important;                   /* was 8/10 */
+  border-radius: 4px !important;                   /* was 0 — softer, more usable */
   box-shadow: none !important;
+  min-height: 42px !important;                     /* taller for usability */
 }
 .sg-panel-col input:focus,
 .sg-panel-col textarea:focus,
 .sg-panel-col select:focus {
-  border-color: var(--action) !important; outline: none !important;
+  border-color: var(--brand) !important;           /* phosphor accent on focus */
+  outline: none !important;
+  box-shadow: 0 0 0 1px rgba(126, 231, 135, 0.25) !important;
 }
 .sg-panel-col input::placeholder, .sg-panel-col textarea::placeholder {
-  color: var(--text-faint) !important;
+  color: var(--text-dim) !important;               /* was --text-faint */
 }
 /* Field labels — Gradio renders <label><span>LABEL</span> ...</label> */
 .sg-panel-col label > span:first-child,
 .sg-panel-col .label-wrap > span,
 .sg-panel-col .label-wrap span {
   color: var(--text-secondary) !important;
-  font-size: 10px !important;
-  letter-spacing: 0.12em !important;
+  font-size: 11px !important;
+  letter-spacing: 0.14em !important;
   text-transform: uppercase !important;
-  font-weight: 500 !important;
-  margin-bottom: 5px !important;
+  font-weight: 600 !important;
+  margin-bottom: 6px !important;
 }
 .sg-panel-col label { background: transparent !important; }
 
@@ -371,16 +376,17 @@ gradio-app::before {
 .sg-panel-col .dropdown,
 .sg-panel-col .wrap-inner,
 .sg-panel-col .options {
-  background: var(--bg-input) !important;
-  border: 1px solid var(--border) !important;
+  background: #1f2630 !important;
+  border: 1px solid var(--border-strong) !important;
   color: var(--text-primary) !important;
+  border-radius: 4px !important;
 }
 .sg-panel-col .dropdown ul li:hover,
 .sg-panel-col .options li:hover {
   background: var(--bg-input-hover) !important;
 }
 
-/* ─── TIER CARDS — 3 styled buttons ──────────────────────────────────── */
+/* ─── TIER CARDS — 3 styled buttons (theme-cohesive phosphor accent) ─── */
 .sg-tier-list, .sg-tier-list .form, .sg-tier-list .gap {
   display: flex !important; flex-direction: column !important; gap: 8px !important;
   background: transparent !important;
@@ -389,14 +395,15 @@ gradio-app::before {
 .sg-tier-card button {
   display: block !important;
   padding: 14px 16px !important;
-  background: var(--bg-input) !important;
-  border: 1px solid var(--border) !important;
+  background: #1f2630 !important;                  /* match input bg */
+  border: 1px solid var(--border-strong) !important;
   color: var(--text-secondary) !important;
   font-family: var(--mono) !important; font-size: 11.5px !important;
   font-weight: 400 !important;
   text-align: left !important; cursor: pointer !important;
   width: 100% !important; min-height: auto !important;
-  border-radius: 0 !important; box-shadow: none !important;
+  border-radius: 4px !important;
+  box-shadow: none !important;
   transition: all 0.15s ease !important;
   white-space: pre-line !important;
   line-height: 1.55 !important;
@@ -412,16 +419,16 @@ gradio-app::before {
   line-height: 2 !important;
 }
 .sg-tier-card button:hover {
-  background: var(--bg-input-hover) !important;
-  border-color: var(--border-strong) !important;
+  background: #252d38 !important;
+  border-color: var(--border-focus) !important;
 }
 .sg-tier-card-selected button {
-  background: rgba(88, 166, 255, 0.06) !important;
-  border-color: var(--action) !important;
-  box-shadow: inset 2px 0 0 var(--action) !important;
+  background: rgba(126, 231, 135, 0.06) !important;        /* phosphor wash */
+  border-color: var(--brand) !important;
+  box-shadow: inset 3px 0 0 var(--brand) !important;
 }
 .sg-tier-card-selected button::first-line {
-  color: var(--action) !important;
+  color: var(--brand) !important;                          /* matches header brand */
 }
 
 /* ─── TERMINAL ────────────────────────────────────────────────────────── */
@@ -455,13 +462,15 @@ gradio-app::before {
 .sg-chrome-status .em { color: var(--text-primary); font-weight: 500; }
 .sg-chrome-meta { color: var(--text-dim); font-size: 11px; }
 .sg-terminal-body {
-  padding: 18px 20px 22px;
-  font-size: 12.5px; line-height: 1.7;
+  padding: 16px 20px 18px;
+  font-size: 12.5px; line-height: 1.65;
   white-space: pre; overflow-x: auto;
   background: var(--bg-panel);
   background-image: linear-gradient(transparent 50%, rgba(255, 255, 255, 0.012) 50%);
   background-size: 100% 3px;
-  min-height: 480px; max-height: 64vh; overflow-y: auto;
+  min-height: 280px;                    /* was 480 — visible above the fold */
+  max-height: 56vh;                     /* still scrolls if a long run */
+  overflow-y: auto;
   color: var(--text-primary);
 }
 .sg-terminal-body .ts  { color: var(--timestamp); }
@@ -480,50 +489,60 @@ gradio-app::before {
 }
 @keyframes sg-blink { 50% { opacity: 0; } }
 
-/* ─── CONTROLS ROW ────────────────────────────────────────────────────── */
+/* ─── CONTROLS ROW — stacks vertically: buttons on top, metrics below ── */
+/* Now a gr.Column wrapped with this class — Gradio gives us flex-direction:
+   column for free, but we still pin it for browsers that style differently. */
 .sg-controls-row {
-  padding: 14px 16px !important;
+  padding: 16px 18px !important;
   background: var(--bg-panel) !important;
   border: 1px solid var(--border) !important;
   margin-bottom: 16px !important;
-  align-items: center !important; gap: 24px !important;
+  display: flex !important;
+  flex-direction: column !important;
+  gap: 14px !important;
+  align-items: stretch !important;
 }
-.sg-btn-group { gap: 8px !important; flex-wrap: nowrap !important; }
+.sg-btn-group {
+  gap: 10px !important;
+  flex-wrap: wrap !important;                    /* on narrow screens buttons wrap rather than overflow */
+  justify-content: flex-start !important;
+}
 .sg-btn-primary, .sg-btn-secondary {
   flex: 0 0 auto !important; min-width: auto !important;
 }
 .sg-btn-primary button, .sg-btn-secondary button {
   font-family: var(--mono) !important; font-size: 12px !important;
-  font-weight: 600 !important; letter-spacing: 0.06em !important;
+  font-weight: 700 !important; letter-spacing: 0.08em !important;
   text-transform: uppercase !important;
-  padding: 9px 16px !important; border-radius: 0 !important;
+  padding: 11px 22px !important;                 /* a touch bigger so it stands alone on its row */
+  border-radius: 4px !important;
   box-shadow: none !important; min-height: auto !important;
   cursor: pointer !important; transition: all 0.15s ease !important;
 }
 .sg-btn-primary button {
-  background: rgba(63, 185, 80, 0.12) !important;
-  border: 1px solid var(--success) !important;
-  color: var(--success) !important;
+  background: rgba(126, 231, 135, 0.10) !important;
+  border: 1px solid var(--brand) !important;
+  color: var(--brand) !important;
 }
-.sg-btn-primary button:hover { background: rgba(63, 185, 80, 0.20) !important; }
+.sg-btn-primary button:hover { background: rgba(126, 231, 135, 0.18) !important; }
 .sg-btn-secondary button {
-  background: var(--bg-input) !important;
+  background: #1f2630 !important;
   border: 1px solid var(--border-strong) !important;
   color: var(--text-primary) !important;
 }
 .sg-btn-secondary button:hover {
-  background: var(--bg-input-hover) !important;
+  background: #252d38 !important;
   border-color: var(--border-focus) !important;
 }
 
-/* ─── METRICS BAR ─────────────────────────────────────────────────────── */
-/* The HTML sits inside Gradio's html-container — force flex on both. */
+/* ─── METRICS BAR (now sits under the run buttons) ───────────────────── */
+.sg-metrics-host { padding-top: 8px !important; border-top: 1px solid var(--border) !important; }
 .sg-metrics-host > div, .sg-metrics-host .prose { background: transparent !important; }
 .sg-metrics {
   display: flex !important; align-items: center !important;
   gap: 24px !important; flex-wrap: wrap !important;
   color: var(--text-secondary) !important; font-size: 11px !important;
-  padding: 4px 0 !important;
+  padding: 6px 0 0 !important;
 }
 .sg-metric {
   display: flex !important; gap: 6px !important; align-items: center !important;
@@ -536,7 +555,7 @@ gradio-app::before {
   color: var(--text-primary) !important; font-weight: 600 !important;
 }
 .sg-metric .value.r { color: var(--reward) !important; }
-.sg-metric .value.s { color: var(--success) !important; }
+.sg-metric .value.s { color: var(--brand) !important; }     /* phosphor — theme cohesion */
 .sg-rubric {
   display: flex !important; align-items: center !important; gap: 14px !important;
   padding-left: 18px !important; margin-left: 4px !important;
@@ -558,7 +577,7 @@ gradio-app::before {
   height: 3px !important; background: var(--bg-input) !important;
   overflow: hidden !important; margin-top: 2px !important;
 }
-.sg-rubric-bar > div { height: 100% !important; background: var(--success) !important; }
+.sg-rubric-bar > div { height: 100% !important; background: var(--brand) !important; }
 
 /* ─── TIER DESCRIPTION (under the cards) ──────────────────────────────── */
 .sg-tier-desc, .sg-tier-desc * {
@@ -603,17 +622,18 @@ def _header_html() -> str:
     return f"""
 <header class="sg-header">
   <div class="sg-brand-block">
-    <div class="sg-brand-mark">SRE-GYM<span>//</span></div>
+    <div class="sg-brand-mark">SystemTruth<span>//</span></div>
     <div class="sg-brand-tagline">
       <em>tier-escalating SRE RL env</em> &nbsp;·&nbsp;
-      RLVE &nbsp;·&nbsp; {THEME_TAGLINE}
+      Triage / Strategy / Operations &nbsp;·&nbsp; {THEME_TAGLINE}
     </div>
   </div>
   <nav class="sg-nav">
     <span class="sg-status-dot">env online</span>
     <a href="/docs" target="_blank" rel="noopener">api docs</a>
     <a href="/mcp/tools" target="_blank" rel="noopener">mcp tools</a>
-    <a href="/info" target="_blank" rel="noopener">legacy</a>
+    <a href="https://github.com/Madhav-GPT/SystemTruth" target="_blank" rel="noopener">github</a>
+    <a href="https://github.com/Madhav-GPT/SystemTruth/blob/main/BLOG.md" target="_blank" rel="noopener">blog</a>
   </nav>
 </header>
 """
@@ -651,11 +671,11 @@ FOOTER_HTML = """
   <div>
     built for the openenv hackathon · india apr '26
     &nbsp;·&nbsp;
-    <a href="https://github.com/Madhav-GPT/sre-env" target="_blank">github</a>
+    <a href="https://github.com/Madhav-GPT/SystemTruth" target="_blank">github</a>
     &nbsp;·&nbsp;
-    <a href="https://huggingface.co/spaces/Madhav189/sre-env" target="_blank">hf space</a>
+    <a href="https://huggingface.co/spaces/Madhav189/SystemTruth" target="_blank">hf space</a>
     &nbsp;·&nbsp;
-    <a href="https://github.com/Madhav-GPT/sre-env/blob/main/BLOG.md" target="_blank">blog</a>
+    <a href="https://github.com/Madhav-GPT/SystemTruth/blob/main/BLOG.md" target="_blank">blog</a>
   </div>
   <div>multi-rubric reward · RLVE procgen · MCP dual-route</div>
 </footer>
@@ -1231,28 +1251,29 @@ def build_app() -> gr.Blocks:
         # ── terminal pane ──────────────────────────────────────────
         terminal = gr.HTML(_initial_terminal_html(), elem_id="sg-terminal-host")
 
-        # ── controls + metrics row ────────────────────────────────
-        with gr.Row(elem_classes=["sg-controls-row"]):
-            with gr.Column(scale=0, min_width=280):
-                with gr.Row(elem_classes=["sg-btn-group"]):
-                    run_btn = gr.Button(
-                        "▶  RUN EVAL",
-                        variant="primary",
-                        elem_classes=["sg-btn-primary"],
-                    )
-                    stop_btn = gr.Button(
-                        "■  STOP",
-                        elem_classes=["sg-btn-secondary"],
-                    )
-                    reset_btn = gr.Button(
-                        "↻  RESET",
-                        elem_classes=["sg-btn-secondary"],
-                    )
-            with gr.Column(scale=1):
-                metrics = gr.HTML(
-                    _metric_bar_html(),
-                    elem_classes=["sg-metrics-host"],
+        # ── controls + metrics — stacked vertically (buttons on top, ──
+        #    metrics below). Using a single Column with two children means
+        #    the metrics bar gets the full width on its own row instead of
+        #    fighting the buttons for horizontal space.
+        with gr.Column(elem_classes=["sg-controls-row"]):
+            with gr.Row(elem_classes=["sg-btn-group"]):
+                run_btn = gr.Button(
+                    "▶  RUN EVAL",
+                    variant="primary",
+                    elem_classes=["sg-btn-primary"],
                 )
+                stop_btn = gr.Button(
+                    "■  STOP",
+                    elem_classes=["sg-btn-secondary"],
+                )
+                reset_btn = gr.Button(
+                    "↻  RESET",
+                    elem_classes=["sg-btn-secondary"],
+                )
+            metrics = gr.HTML(
+                _metric_bar_html(),
+                elem_classes=["sg-metrics-host"],
+            )
 
         gr.HTML(FOOTER_HTML)
 

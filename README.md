@@ -1,5 +1,5 @@
 ---
-title: SRE Gym
+title: SystemTruth
 emoji: 🚨
 colorFrom: red
 colorTo: yellow
@@ -9,72 +9,44 @@ pinned: false
 license: apache-2.0
 ---
 
-# sre-gym — a tier-escalating SRE training environment
+# SystemTruth — a tier-escalating SRE training environment
 
 > **Hackathon submission — OpenEnv-class, India 2026**
 >
 > - 📖 **Blog:** [BLOG.md](BLOG.md)
-> - 🚀 **Live HF Space:** https://huggingface.co/spaces/Madhav189/sre-env
-> - 💻 **GitHub:** https://github.com/Madhav-GPT/sre-env
-> - 🧪 **Training notebook:** [`notebooks/01_triage_train_grpo_qwen25_7b.ipynb`](notebooks/01_triage_train_grpo_qwen25_7b.ipynb)
+> - 🚀 **Live HF Space:** https://huggingface.co/spaces/Madhav189/SystemTruth
+> - 💻 **GitHub:** https://github.com/Madhav-GPT/SystemTruth
+> - 🧪 **Training notebook (Colab):** [![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/drive/1Re9pwkabEP4Cearc2hCMMqGdEjSSUjGu?usp=sharing) — same as [`notebooks/01_triage_train_grpo_qwen25_7b.ipynb`](notebooks/01_triage_train_grpo_qwen25_7b.ipynb)
 > - 📊 **Eval results:** [`eval/results/`](eval/results/)
 > - 📜 **License:** Apache 2.0
 
 **Each tier escalates a different dimension. Triage escalates compute, Strategy escalates horizon, Operations escalates realism.** That single sentence is the load-bearing claim of the project.
 
-The repo's centre of gravity, in priority order:
-
-1. **The environment** — 12 incident templates × 6 procgen variants = 72 deterministic scenarios, exposed via the OpenEnv contract (`/reset` / `/step`) on a FastAPI server. Same code path serves the Gradio UI mounted at `/`.
-2. **The reward rubric** — a 5-component composite that sums to exactly 1.0, with a heuristic ceiling pinned to `[0.65, 0.80]` and a scripted-expert floor at `≥0.90`, both enforced by CI invariants on every commit. Includes a calibration term inside `submit_hypothesis` that grades confident-wrong twice as harshly as hedged-wrong — a small **world-modelling** primitive: the agent has to maintain a belief over root causes and emit a calibrated confidence estimate.
-3. **Coliseum** — a parallel-rollout pool server that turns the env into a lease-based HTTP service so any GRPO trainer can drive K-rollouts-per-scenario without holding a Python env per worker.
-4. **Training & datasets (the honest weak point)** — an end-to-end SFT → GRPO pipeline on Qwen2.5-7B-Instruct, trained against a 120-episode trajectory corpus harvested from the env. The pipeline runs cleanly; the corpus and step budget are smaller than they need to be to break the heuristic ceiling on held-out scenarios. **The env is ready to train against; we ran out of compute before the model was.**
-
 ---
 
-## What's in the box
+## What's in the box (the USP — read this first)
 
-| Tier | Runnable kind | Scenarios | What "running" means |
+SystemTruth is **one runnable RL environment with three personas baked into it**. The same 11-action contract, the same 5-component reward rubric, the same termination shape — escalated along three orthogonal axes that map to the three real bottlenecks SRE-agent training loops actually hit.
+
+![SystemTruth architecture — three tiers under one shared 11-action interface + 5-component rubric](docs/blog/system_architecture.png)
+
+### One environment, three tiers, three different bottlenecks
+
+| Tier | Bottleneck | Persona | What it teaches |
 |---|---|---|---|
-| **Triage** | live HTTP env | 12 templates × 6 entries each (1 base + 5 procgen) = **72 scenarios** | `/reset` + `/step` against the FastAPI server in this Docker image. The Gradio UI drives episodes end-to-end via the same routes. |
-| **Strategy** | Python orchestrator | 3 reference YAML scenarios | `sre_gym.strategy.runner.run_strategy` chains Triage episodes together, threading horizon state (unresolved alerts, pending deploys, tech-debt counter, horizon-decay reward). The 28-action universe in the YAML is design spec; the runner uses the Triage 11 actions. |
-| **Operations** | Python state-machine simulator | 1 family with 11 chaos patterns | `sre_gym.operations.runner.run_operations` mutates an in-memory 22-node service graph. Same Triage 11 actions. The compose stack alongside the simulator describes the topology an enterprise team would lift into a real cluster — the simulator runs without that lift. |
+| **Triage** | **Compute** | ML student / Kaggle, $30 of HF credits | causal mapping under tight context — pre-digested observations, dense reward shaping, 8K context, 11-action space, 8–13 ticks per episode |
+| **Strategy** | **Horizon** | Seed-stage startup, $300–500 budget | long-horizon planning across chained incidents — multi-incident chains with persistent state, unresolved alerts and pending deploys carry forward, 60–90 ticks |
+| **Operations** | **Realism** | Enterprise SRE platform, 8×A100/H100 cluster | authentic tool use against irreversible actions — 22-node service graph, 11 chaos patterns pinned to real production post-mortems, 110–180+ actions per episode |
 
-The escalation axis is the point: each tier hardens a different bottleneck of building SRE agents in production.
+The escalation axis is the entire pitch. Most RL environments stratify by *difficulty* (more scenarios, longer episodes, harder rewards). SystemTruth stratifies by **the dimension that actually limits the training loop for that persona**:
 
----
+- A junior on-call learning to triage faces a different problem (cognitive efficiency under tight context) than a senior SRE running a multi-incident postmortem (state tracking across long horizons), which faces a different problem from an enterprise platform team operating against an actively chaos-engineered cluster (irreversible actions, partial observability, real wall-clock).
+- Their training signals, episode shapes, observation richness, and reward structures should not look the same.
+- SystemTruth takes that observation seriously and stratifies its tiers along *the dimension that actually limits the persona's training loop*.
 
-## Quickstart
+### The shared 11-action contract
 
-### 5-minute local demo (no API keys, no server, no GPU)
-
-```bash
-pip install -e .
-ollama pull llama3.2
-python -m sre_gym.local triage worker_deploy_cascade
-```
-
-The CLI drives `UnifiedIncidentEnvironment` directly and prints per-tick reward, the 5-component score breakdown, and a final summary. See [`sre_gym/local.py`](sre_gym/local.py) for the full flag set.
-
-### Live HF Space (Triage tier, hosted)
-
-Open https://huggingface.co/spaces/Madhav189/sre-env. Pick a scenario and a model provider, click **▶ run eval**. Each tick streams the action, env response, reward delta, and the 5-component breakdown.
-
-### Local server + Gradio UI
-
-```bash
-make install
-make dev                                              # FastAPI + Gradio on :7860
-python -m sre_gym.strategy run cascading_release_train
-python -m sre_gym.operations run ecommerce_vibecoded_saas --chaos rls_silent_leak
-```
-
-The FastAPI server speaks the OpenEnv contract (`/reset /step /state /tasks /baseline /grader /status /health /metadata /schema`) plus an MCP JSON-RPC route at `/mcp`.
-
----
-
-## The Triage tier — the runnable contract
-
-12 base templates of one-incident-at-a-time scenarios; each generates 5 procgen variants for 72 scenarios total. The agent has 11 bounded actions:
+Every tier — Triage, Strategy, Operations — speaks the same eleven Pydantic-validated actions. **One contract, three escalation envelopes:**
 
 ```
 query_logs(service)            query_metrics(service, metric)
@@ -85,17 +57,33 @@ submit_hypothesis(hypothesis)  escalate
 declare_resolved
 ```
 
-A successful episode looks like: `gather evidence → submit_hypothesis → rollback_deploy → restart_service → both run_check pass → declare_resolved`. Wrong rollback target, premature restart, or premature resolution all return negative reward and a typed `failure_type`.
+A successful episode is `gather evidence → submit_hypothesis → rollback_deploy → restart_service → both run_check pass → declare_resolved`. Wrong rollback target, premature restart, or premature resolution all return negative reward and a typed `failure_type`. The contract refuses to be gamed.
 
-Services live in a 4-node topology (`api-gateway / cache / database / worker`) plus an 11-service noise-decoy pool that surfaces in alerts as decoys but never in queries. Each scenario specifies a root cause, the correct rollback target, the resolution check that must pass, and the decoy traps. See [`docs/TRIAGE_TIER.md`](docs/TRIAGE_TIER.md) for the per-template skill table.
+### The episode lifecycle, illustrated
 
-The Triage server is **the** runnable contract — Strategy and Operations chain Triage episodes; Coliseum (below) wraps Triage in a lease-based HTTP shape; the local CLI imports the Triage env in-process. Everything else is a runner shape on top.
+The lifecycle below is the Triage tier in detail; Strategy chains N of them with horizon-decay, Operations runs one of them inside a graph-mutation simulator. **The shape is shared across all three tiers** — the simulator under it is what changes.
 
----
+![SystemTruth episode lifecycle — Triage tier, same shape inherited by Strategy and Operations](docs/blog/episode_lifecycle.png)
 
-## The reward rubric — the engineering crown jewel
+Eleven numbered stages, each producing a measurable signal:
 
-Triage uses a **5-component rubric** that sums to exactly 1.0 — see [`docs/REWARD_DESIGN.md`](docs/REWARD_DESIGN.md):
+1. **`reset(scenario_id)`** — env emits the initial observation: tick counter, workflow stage, incident summary, active alerts, noise alerts (decoys), service health (cpu/mem/err/latency), user impact, SLO burn rate, checks, allowed actions.
+2. **Evidence gathering loop** — agent calls `query_logs / query_metrics / query_dependencies / query_deploys`. After every step the env computes a per-tick **shaped reward** as a potential difference (`Δ critical_service_health × 0.55 + Δ (1 − user_impact) × 0.20 + Δ (1 − slo_burn_rate) × 0.15 + containment_applied × 0.10`) minus `step_cost`, plus `bonus`, minus `penalty`.
+3. **`submit_hypothesis(root_cause, affected_services, confidence, recommended_next_action)`** — the world-modelling primitive. Confidence is a `float ∈ [0,1]` the agent must commit to.
+4. **Hypothesis correctness check** — if the root cause matches truth, the agent gets an in-episode bonus up to ~0.12 (idempotent — second identical hypothesis scores 0). If wrong, the agent loops back to investigation with a new observation.
+5. **`rollback_deploy(service)`** — the irreversible action. Wrong target = `unsafe_action_penalty` (0.08 medium / 0.12 hard). Correct target sets `cause_removed = True` and unblocks restart.
+6. **`restart_service(service)`** — only valid if scenario requires it. Guard: if cause not removed, premature-restart penalty fires and state re-inherits the bad config.
+7. **`run_check("end_to_end" | "database_recovery")`** — verification gate. If checks fail, agent loops back to investigation.
+8. **`declare_resolved`** — terminal action. Guard: if checks not passed, `premature_resolution_penalty` (0.20 / 0.30) fires.
+9. **Episode terminates** — terminal state emitted.
+10. **Compute composite from terminal state** — the 5-component rubric below evaluates outcome / action_validity / format / anticheat / efficiency, sums to 1.0 with weighted clamping to `[0.01, 0.99]`.
+11. **Reference scores anchor the rubric** — random `0.417` (0/36 resolved), naive heuristic `0.749` (0/12 resolved), scripted-optimal `0.938` (12/12 resolved). The 0.20 gap from `0.80 → 1.00` is what GRPO trains into.
+
+**Cross-tier extension:**
+- **Strategy** chains N Triage episodes, applies a `horizon_decay_factor × mean(per-phase composite)` to the final reward.
+- **Operations** runs the same lifecycle inside a graph-mutation simulator over a 22-node service topology, same rubric, same horizon-decay weighting.
+
+### Reward rubric — the engineering crown jewel
 
 ```
 final_reward = 0.45·outcome
@@ -113,14 +101,7 @@ final_reward = 0.45·outcome
   efficiency       exp(-current_tick / optimal_ticks_for_template)
 ```
 
-Plus per-tick *shaped* reward (the change in incident-health potential) for dense GRPO signal. Strategy and Operations reuse the Triage rubric and apply a horizon-decay factor over per-phase composites.
-
-Two reference scores anchor the rubric and are CI-pinned:
-
-- **Heuristic ceiling `[0.65, 0.80]`** — a naive policy that gathers evidence and submits the correct hypothesis but never remediates lands here. Enforced by `test_heuristic_ceiling_is_in_band` across all 12 templates. The 0.20 gap from 0.80 → 1.00 is the GRPO training target.
-- **Scripted-expert floor `≥0.90`** — the optimal canonical solve scores ~0.94 on every template. Enforced by `test_round2_baseline_resolves`.
-
-Adversarial cheats are first-class:
+Each component defends against a specific cheat:
 
 | Cheat strategy | Blocked by |
 |---|---|
@@ -145,13 +126,19 @@ calibration awards
    -1.0   confident-wrong
 ```
 
-The `confidence ∈ [0,1]` field is part of the structured `HypothesisPayload` Pydantic model the agent emits; the calibration sub-term reads it directly. **A model that bluffs high confidence on a wrong root cause is worse than one that hedges.** That's the world-modelling primitive — the env is grading the agent's belief, not just its prediction.
+The `confidence ∈ [0,1]` field is part of the structured `HypothesisPayload` Pydantic model the agent emits; the calibration sub-term reads it directly. **A model that bluffs high confidence on a wrong root cause is worse than one that hedges.** That's the world-modelling primitive — the env grades the agent's belief, not just its prediction.
+
+Two CI invariants pin the rubric in place on every commit:
+- **Heuristic ceiling `[0.65, 0.80]`** — `test_heuristic_ceiling_is_in_band` enforces this band on every template. The 0.20 gap from 0.80 → 1.00 is the GRPO training target.
+- **Scripted-expert floor `≥0.90`** — `test_round2_baseline_resolves` enforces ≥0.90 on the round-2 templates.
+
+Tighten either side and the gradient signal collapses; loosen either side and a memorising model can game the rubric. The band is the load-bearing engineering claim.
 
 ---
 
 ## Coliseum — parallel-rollout pool server
 
-[`coliseum/`](coliseum/) wraps the Triage env in a lease-based HTTP contract so a GRPO trainer's parallel-rollout side can drive the env without holding an in-process `UnifiedIncidentEnvironment` per worker:
+[`coliseum/`](coliseum/) wraps the Triage env in a lease-based HTTP contract so a GRPO trainer's parallel-rollout side can drive the env without holding an in-process Python instance per worker:
 
 ```
 allocate(task_key)                    -> {ok: true, lease_id}
@@ -177,17 +164,19 @@ Standard lease-pool pattern — see [`coliseum/README.md`](coliseum/README.md) f
 
 ## Training & datasets — the honest weak point
 
-The environment is the project. Training scripts orbit around it. We ran a real end-to-end Triage run on the day of the deadline — pipeline works, results are below the heuristic, the gap is real, and we're saying so.
+The environment is the project. Training scripts orbit around it. We ran a real end-to-end Triage run on the day of the deadline — pipeline works, results are below the heuristic plateau, the gap is real, and we're saying so.
 
 ### What we ran
 
-Pipeline lives in [`notebooks/01_triage_train_grpo_qwen25_7b.ipynb`](notebooks/01_triage_train_grpo_qwen25_7b.ipynb) (target: A100 80GB, ~2-3h end-to-end):
+Pipeline lives in [`notebooks/01_triage_train_grpo_qwen25_7b.ipynb`](notebooks/01_triage_train_grpo_qwen25_7b.ipynb) — also openable in Colab via the badge: [![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/drive/1Re9pwkabEP4Cearc2hCMMqGdEjSSUjGu?usp=sharing). Target A100 80GB, ~2-3h end-to-end:
 
 1. **SFT cold-start** — Unsloth + Qwen2.5-7B-Instruct (4-bit) + LoRA r=32, 50 steps × batch 16 on a 999-example diverse trajectory corpus. Eval perplexity 1.755 (healthy `[1.5, 3.0]` band). Saved to `outputs/qwen25_7b_sft_final/`.
 2. **GRPO online** — TRL's `GRPOTrainer`, 40 steps × K=2 rollouts. Reward = composite + scenario-aware first-action bonus. Saved to `outputs/qwen25_7b_grpo_final/`.
 3. **Held-out eval** — 12 `__p05` scenarios × 3 seeds = 36 episodes per policy, 5 policies compared.
 
 ### What it produced
+
+![SystemTruth Triage holdout eval — Qwen2.5-7B, 12 scenarios × 3 seeds](eval/results/qwen25_7b_comparison_hero.png)
 
 | policy | mean | median | p25 | p75 | resolved_rate |
 |---|---|---|---|---|---|
@@ -196,6 +185,8 @@ Pipeline lives in [`notebooks/01_triage_train_grpo_qwen25_7b.ipynb`](notebooks/0
 | **qwen25-7b-grpo** | **0.379** | 0.380 | 0.378 | 0.380 | 0/36 |
 | heuristic (queries + correct hypothesis, no remediation) | 0.704 | 0.705 | 0.703 | 0.705 | 0/36 |
 | scripted-optimal | 0.938 | 0.939 | 0.937 | 0.940 | 36/36 |
+
+![Per-template mean score by policy](eval/results/qwen25_7b_comparison_per_template.png)
 
 Honest reading:
 - SFT lifted the model 11% above random (0.342 → 0.379). Format-learning worked: the trained model produces 100% schema-valid `action_type` JSON.
@@ -207,6 +198,35 @@ Honest reading:
 The training-time weak spot is **data scale and step budget**, not the env. The 120-episode corpus + 50-step SFT + 40-step GRPO is what fits inside a hackathon weekend on one A100. The env, the rubric, and Coliseum are all sized for the real run; the trajectory corpus and the GRPO budget are not. Scaling either side (more teacher trajectories, more GRPO steps with K=4 rollouts, longer eval window) is the obvious next move and the bottleneck stops being the env.
 
 The training scripts in [`train/`](train/) are working as written for the dataset we have — `build_corpus.py` produces a clean 60/20/20 quality-stratified split, `eval_sweep.py` drives the held-out comparison, `run_expert_collection.py` harvests teacher trajectories. They don't need rewriting; they need more data flowing through them.
+
+---
+
+## Quickstart
+
+### 5-minute local demo (no API keys, no server, no GPU)
+
+```bash
+pip install -e .
+ollama pull llama3.2
+python -m sre_gym.local triage worker_deploy_cascade
+```
+
+The CLI drives `UnifiedIncidentEnvironment` directly and prints per-tick reward, the 5-component score breakdown, and a final summary.
+
+### Live HF Space (Triage tier, hosted)
+
+Open https://huggingface.co/spaces/Madhav189/SystemTruth. Pick a tier, paste an HF token, click **▶ run eval**. Each tick streams the action, env response, reward delta, and the 5-component breakdown.
+
+### Local server + Gradio UI
+
+```bash
+make install
+make dev                                              # FastAPI + Gradio on :7860
+python -m sre_gym.strategy run cascading_release_train
+python -m sre_gym.operations run ecommerce_vibecoded_saas --chaos rls_silent_leak
+```
+
+The FastAPI server speaks the OpenEnv contract (`/reset /step /state /tasks /baseline /grader /status /health /metadata /schema`) plus an MCP JSON-RPC route at `/mcp`.
 
 ---
 
@@ -223,19 +243,9 @@ ln -s "$PWD/skill" "$HOME/.claude/skills/sre-gym"
 bash demo/run_demo.sh                                # end-to-end demo
 ```
 
-12 verified-runbook drafts ship in [`skill/verified-runbooks/`](skill/verified-runbooks/) — one per Triage template. The skill validates them by re-running the env after each solve.
-
 ### Path B — GRPO-trained adapter (one A100, ~2–3h on 7B)
 
 The training pipeline above. Path A is what an agent ships *today*; Path B is what raises the floor on the templates it sees over and over.
-
----
-
-## The HF Space UI
-
-The Gradio app at https://huggingface.co/spaces/Madhav189/sre-env is mounted at `/` of the same uvicorn process that serves `/reset` + `/step`. Three tiers selectable as cards (Triage live HTTP, Strategy chained-episode runner, Operations graph simulator). Every run streams per-tick action, env response, reward delta, and the 5-component breakdown — `out=… valid=… fmt=… anti=… eff=…`.
-
-Provider auth is whatever the user pastes (HF token plus optional Anthropic / OpenAI / Together / Fireworks / Groq / DeepSeek key). Tokens live only on the request instance — never logged, never persisted, never echoed in error messages. CSS theme is GitHub-dark phosphor on a JetBrains Mono base; see [`app.py`](app.py) for the full styling block.
 
 ---
 
@@ -268,74 +278,29 @@ Old tier names (`Tier.BASIC`, `Tier.ADVANCED`, `Tier.MAX`) are preserved as Enum
 
 ```bash
 make test            # green at HEAD
-ruff check .         # configured; pre-existing F401 cleanups tracked separately
+ruff check .
 openenv validate .   # green
 ```
 
 The two CI invariants that keep the rubric calibrated:
 
 - `test_heuristic_ceiling_is_in_band` — naive heuristic in `[0.65, 0.80]` on every template.
-- `test_round2_baseline_resolves` — scripted-optimal `≥ 0.90` on the 6 round-2 templates.
-
-Tighten either side and the gradient signal collapses; loosen either side and a memorising model can game the rubric without learning causality. The band is the load-bearing engineering claim.
-
----
-
-## Architecture
-
-```
-┌──────────────────────────────────────────────────────────────┐
-│  app.py  (uvicorn app:app on port 7860)                      │
-│   ├─ Gradio terminal UI mounted at /                         │
-│   └─ FastAPI server (unified_incident_env.server.app)        │
-│       ├─ /reset /step /state         OpenEnv contract        │
-│       ├─ /tasks /baseline /grader    catalogue + scoring     │
-│       ├─ /status /health             ops probes              │
-│       ├─ /metadata /schema           OpenEnv metadata        │
-│       ├─ /mcp                        JSON-RPC 2.0 dual-route │
-│       ├─ /docs /redoc /openapi.json  Swagger / ReDoc         │
-│       └─ /info /simple               legacy markdown landing │
-│                                                              │
-│  sre_gym/                                                    │
-│   ├─ tier.py                Tier enum + TierConfig           │
-│   ├─ env.py                 SREGym factory (delegates per t.)│
-│   ├─ basic_runner.py        wrap UnifiedIncidentEnvironment  │
-│   ├─ strategy/runner.py     chain Triage episodes + horizon  │
-│   ├─ operations/runner.py   Python state-machine over 22 nd. │
-│   ├─ ui/                    providers, router, policies      │
-│   ├─ local.py               in-process CLI for Ollama models │
-│   └─ exceptions.py          typed errors                     │
-│                                                              │
-│  coliseum/                  parallel-rollout pool server     │
-│   ├─ server.py              FastAPI lease pool               │
-│   └─ client.py              ArenaClient + create_arena_client│
-│                                                              │
-│  notebooks/                                                  │
-│   └─ 01_triage_train_grpo_qwen25_7b.ipynb   SFT → GRPO pipe. │
-│                                                              │
-│  skill/                     Claude Code skill (Path A)       │
-│   ├─ SKILL.md               agent instructions               │
-│   ├─ tools/                 sre-gym HTTP client              │
-│   └─ verified-runbooks/     12 per-template runbooks         │
-└──────────────────────────────────────────────────────────────┘
-```
-
-Per-tier deep dives in [`docs/TRIAGE_TIER.md`](docs/TRIAGE_TIER.md) / [`docs/STRATEGY_TIER.md`](docs/STRATEGY_TIER.md) / [`docs/OPERATIONS_TIER.md`](docs/OPERATIONS_TIER.md). Reward design: [`docs/REWARD_DESIGN.md`](docs/REWARD_DESIGN.md). Operator guide: [`execution.md`](execution.md). Architectural narrative: [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md). Blog: [`BLOG.md`](BLOG.md).
+- `test_round2_baseline_resolves` — scripted-optimal `≥ 0.90` on the round-2 templates.
 
 ---
 
 ## Materials
 
-- [`openenv.yaml`](openenv.yaml) — declares the three tiers, runnable kinds, scenario counts.
-- [`pyproject.toml`](pyproject.toml) — Python package, deps, entry points.
-- [`docs/`](docs/) — architecture, per-tier deep dives, reward design, scenario authoring guide, references.
-- [`docs/blog/`](docs/blog/) — the 6 blog assets (hero, topology, rubric donut, chaos timeline, two-paths, baselines bar).
-- [`skill/`](skill/) — Claude Code skill packaging (Path A).
-- [`coliseum/`](coliseum/) — parallel-rollout pool server.
-- [`demo/`](demo/) — `run_demo.sh` end-to-end demo, `pitch.md` narrative.
-- [`eval/`](eval/) — held-out split definition, results directory.
-- [`train/data/`](train/data/) — teacher trajectories (Claude Opus + Llama-3.3-70B + scripted baselines + 120-episode v2 corpus).
-- [`notebooks/`](notebooks/) — Triage SFT→GRPO training (`01_triage_train_grpo_qwen25_7b.ipynb`), eval comparison (`02_triage_eval_compare_all.ipynb`), Strategy + Operations walkthroughs.
+- [`BLOG.md`](BLOG.md) — the hackathon blog (with all 6 assets in `docs/blog/`)
+- [`openenv.yaml`](openenv.yaml) — declares the three tiers, runnable kinds, scenario counts
+- [`docs/`](docs/) — architecture, per-tier deep dives, reward design, scenario authoring
+- [`docs/blog/`](docs/blog/) — visuals: lifecycle, architecture, hero, topology, rubric donut, chaos timeline, two-paths, baselines bar
+- [`skill/`](skill/) — Claude Code skill packaging (Path A)
+- [`coliseum/`](coliseum/) — parallel-rollout pool server
+- [`demo/`](demo/) — `run_demo.sh` end-to-end demo, `pitch.md` narrative
+- [`eval/`](eval/) — held-out split definition, results directory with the latest eval CSV + plots
+- [`train/data/`](train/data/) — teacher trajectories (Claude Opus + Llama-3.3-70B + scripted baselines + 120-episode v2 corpus)
+- [`notebooks/`](notebooks/) — Triage SFT→GRPO training (`01_triage_train_grpo_qwen25_7b.ipynb`), eval comparison (`02_triage_eval_compare_all.ipynb`), Strategy + Operations walkthroughs
 
 ---
 

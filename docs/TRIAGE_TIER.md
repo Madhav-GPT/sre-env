@@ -179,7 +179,7 @@ End-to-end: ~2-3h on a single A100 80GB, ~$5–8 of HF compute credits.
 - ✅ 12 templates × 5 procgen variants = 72 scenarios live
 - ✅ Pytest suite green
 - ✅ `openenv validate .` green
-- ✅ HF Space deployed at `Madhav189-sre-env.hf.space`
+- ✅ HF Space deployed at `Madhav189-SystemTruth.hf.space`
 - ✅ Training notebook runs end-to-end on A100 80GB
 - ✅ Eval comparison cell produces hero bar + per-template chart
 - ✅ Trained Qwen2.5-7B adapter saved to `outputs/qwen25_7b_grpo_final/`

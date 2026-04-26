@@ -67,7 +67,7 @@ The honest framing: **the env is the project, the rubric is the engineering crow
 ## 2. Local setup
 
 ```bash
-git clone https://github.com/Madhav-GPT/sre-env.git
+git clone https://github.com/Madhav-GPT/SystemTruth.git
 cd sre-env
 
 python3 -m venv .venv
@@ -280,7 +280,7 @@ app_port: 7860
 
 ```bash
 # One-time: add the HF Space as a git remote
-git remote add hf https://huggingface.co/spaces/Madhav189/sre-env
+git remote add hf https://huggingface.co/spaces/Madhav189/SystemTruth
 
 # Push (HF prompts for token if not cached)
 git push hf main
@@ -340,8 +340,8 @@ bash demo/run_demo.sh
 
 ## 12. Submission checklist
 
-- [x] Repo public on GitHub: https://github.com/Madhav-GPT/sre-env
-- [x] HF Space live: https://huggingface.co/spaces/Madhav189/sre-env
+- [x] Repo public on GitHub: https://github.com/Madhav-GPT/SystemTruth
+- [x] HF Space live: https://huggingface.co/spaces/Madhav189/SystemTruth
 - [x] BLOG.md at repo root
 - [x] 6 blog assets in `docs/blog/`
 - [x] Training notebook executed end-to-end, results in `eval/results/`
