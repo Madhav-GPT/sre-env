@@ -519,8 +519,41 @@ if str(Path(".").resolve()) not in sys.path:
 from unified_incident_env.models import UnifiedIncidentAction
 from unified_incident_env.server.environment import UnifiedIncidentEnvironment
 
+# Inline the SFT system prompt so this cell survives kernel restart standalone
+# (must be IDENTICAL to the one in Cell 4 — same chat template = same model
+# distribution at test time).
+SFT_SYSTEM_PROMPT = """You are a senior SRE on-call agent inside the sre-gym Triage environment.
+
+Output EXACTLY one JSON object per turn — no prose, no markdown, no fences.
+The 11 actions are:
+  query_logs(service)            query_metrics(service, metric)
+  query_dependencies(service)    query_deploys(service)
+  rollback_deploy(service)       restart_service(service)
+  isolate_service(service)       run_check(check_name)
+  submit_hypothesis(hypothesis)  escalate
+  declare_resolved
+
+Services: api-gateway / cache / database / worker.
+metric in {cpu, error_rate, latency}; check_name in {database_recovery, end_to_end}.
+
+A successful episode looks like: gather evidence -> submit_hypothesis -> rollback ->
+restart -> both run_checks pass -> declare_resolved. Wrong rollback / premature
+restart / premature declare_resolved are penalized. Repeated identical hypotheses
+score 0."""
+
 
 def build_grpo_prompts(num_prompts=120, seed=0):
+    """Build GRPO prompts already wrapped in the SAME chat template that SFT used.
+
+    CRITICAL: TRL's GRPOTrainer treats the dataset's "prompt" column as raw
+    text and feeds it straight to model.generate. If we pass raw env prompts
+    (no <|im_start|> markers), the SFT-trained model sees out-of-distribution
+    input, doesn't produce JSON, and every rollout gets the -0.5 format
+    penalty (reward_std=0 → no learning signal).
+
+    The fix: pre-render the chat template here so the prompt looks identical
+    to what the model saw during SFT, ending with `<|im_start|>assistant\n`.
+    """
     templates = [
         "worker_deploy_cascade", "db_config_rollout", "gateway_auth_rollout",
         "payment_webhook_misconfig", "schema_drift_missing_migration", "cache_stale_state",
@@ -540,7 +573,17 @@ def build_grpo_prompts(num_prompts=120, seed=0):
             obs = env.reset(scenario_id=scenario)
         if rng.random() > 0.5:
             obs = env.step(UnifiedIncidentAction(action_type="query_logs", service="worker"))
-        out.append({"prompt": obs.prompt_text, "scenario_id": scenario})
+
+        # Render the prompt in the same ChatML format SFT trained with.
+        chat_prompt = tokenizer.apply_chat_template(
+            [
+                {"role": "system", "content": SFT_SYSTEM_PROMPT},
+                {"role": "user", "content": obs.prompt_text},
+            ],
+            tokenize=False,
+            add_generation_prompt=True,   # appends `<|im_start|>assistant\n`
+        )
+        out.append({"prompt": chat_prompt, "scenario_id": scenario})
     return out
 
 
