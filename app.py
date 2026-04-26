@@ -214,38 +214,61 @@ CSS = """
   --mono: 'JetBrains Mono', ui-monospace, 'Cascadia Code', 'Source Code Pro', 'Menlo', 'Consolas', monospace;
 }
 
-body, .gradio-container, button, input, select, textarea,
-.cm-content, .cm-scroller, .cm-editor {
+/* ─── GLOBAL — beat Gradio defaults to a pulp ─────────────────────────── */
+html, body, gradio-app, .gradio-container,
+.gradio-container *, button, input, select, textarea,
+.cm-content, .cm-scroller, .cm-editor, .prose, .prose * {
   font-family: var(--mono) !important;
 }
-.gradio-container {
+gradio-app, html, body {
   background: var(--bg-base) !important;
-  max-width: 1280px !important;
-  margin: 0 auto !important;
   color: var(--text-primary) !important;
 }
+gradio-app::before {
+  content: ''; position: fixed; inset: 0; z-index: 0; pointer-events: none;
+  background:
+    radial-gradient(ellipse at top left, rgba(126, 231, 135, 0.04), transparent 50%),
+    radial-gradient(ellipse at bottom right, rgba(88, 166, 255, 0.03), transparent 50%);
+}
+.gradio-container {
+  background: transparent !important;
+  max-width: 1280px !important;
+  width: 100% !important;
+  margin: 0 auto !important;
+  padding: 0 24px !important;
+  color: var(--text-primary) !important;
+  position: relative; z-index: 1;
+}
 
-/* HEADER */
+/* Hide Gradio's grey scrollbar / overflow artefacts */
+.gradio-container .form, .gradio-container .block, .gradio-container .panel {
+  background: transparent !important; border: none !important; box-shadow: none !important;
+}
+
+/* ─── HEADER ──────────────────────────────────────────────────────────── */
 .sg-header {
-  display: flex; align-items: center; justify-content: space-between;
-  padding: 22px 0 14px; border-bottom: 1px solid var(--border); margin-bottom: 0;
+  display: flex !important; align-items: center !important;
+  justify-content: space-between !important;
+  padding: 22px 0 14px !important;
+  border-bottom: 1px solid var(--border) !important;
 }
-.sg-brand-block { display: flex; align-items: center; gap: 18px; }
+.sg-brand-block { display: flex !important; align-items: center !important; gap: 18px !important; }
 .sg-brand-mark {
-  font-weight: 800; font-size: 22px; letter-spacing: 0.04em;
-  color: var(--brand); text-shadow: 0 0 12px rgba(126, 231, 135, 0.25);
+  font-weight: 800 !important; font-size: 22px !important;
+  letter-spacing: 0.04em !important; color: var(--brand) !important;
+  text-shadow: 0 0 12px rgba(126, 231, 135, 0.25) !important;
 }
-.sg-brand-mark span { color: var(--text-faint); font-weight: 500; }
+.sg-brand-mark span { color: var(--text-faint) !important; font-weight: 500 !important; }
 .sg-brand-tagline {
-  color: var(--text-secondary); font-size: 12px;
-  padding-left: 18px; border-left: 1px solid var(--border);
+  color: var(--text-secondary) !important; font-size: 12px !important;
+  padding-left: 18px !important; border-left: 1px solid var(--border) !important;
 }
-.sg-brand-tagline em { font-style: normal; color: var(--text-primary); }
-.sg-nav { display: flex; align-items: center; gap: 14px; }
+.sg-brand-tagline em { font-style: normal !important; color: var(--text-primary) !important; }
+.sg-nav { display: flex !important; align-items: center !important; gap: 14px !important; }
 .sg-status-dot {
-  display: inline-flex; align-items: center; gap: 8px;
-  color: var(--text-secondary); font-size: 11px;
-  text-transform: uppercase; letter-spacing: 0.12em;
+  display: inline-flex !important; align-items: center !important; gap: 8px !important;
+  color: var(--text-secondary) !important; font-size: 11px !important;
+  text-transform: uppercase !important; letter-spacing: 0.12em !important;
 }
 .sg-status-dot::before {
   content: ''; display: inline-block; width: 7px; height: 7px;
@@ -258,91 +281,155 @@ body, .gradio-container, button, input, select, textarea,
   50%      { opacity: 0.5; transform: scale(0.85); }
 }
 .sg-nav a {
-  color: var(--text-secondary); text-decoration: none; font-size: 11px;
-  text-transform: uppercase; letter-spacing: 0.12em;
-  padding: 6px 10px; border: 1px solid var(--border); transition: all 0.15s ease;
+  color: var(--text-secondary) !important; text-decoration: none !important;
+  font-size: 11px !important; text-transform: uppercase !important;
+  letter-spacing: 0.12em !important; padding: 6px 10px !important;
+  border: 1px solid var(--border) !important; transition: all 0.15s ease !important;
 }
 .sg-nav a:hover {
-  color: var(--text-primary); border-color: var(--border-focus); background: var(--bg-elevated);
+  color: var(--text-primary) !important;
+  border-color: var(--border-focus) !important;
+  background: var(--bg-elevated) !important;
 }
 
-/* BUILD STRIP */
+/* ─── BUILD STRIP ─────────────────────────────────────────────────────── */
 .sg-build {
-  display: flex; justify-content: space-between; padding: 9px 0;
-  color: var(--text-dim); font-size: 11px; letter-spacing: 0.04em;
-  border-bottom: 1px solid var(--border);
+  display: flex !important; justify-content: space-between !important;
+  padding: 9px 0 !important; color: var(--text-dim) !important;
+  font-size: 11px !important; letter-spacing: 0.04em !important;
+  border-bottom: 1px solid var(--border) !important;
 }
-.sg-build span { color: var(--text-secondary); }
-.sg-build code { color: var(--brand-dim); font-family: var(--mono); }
+.sg-build span { color: var(--text-secondary) !important; }
+.sg-build code {
+  color: var(--brand-dim) !important; background: transparent !important;
+  font-family: var(--mono) !important; padding: 0 !important;
+}
 
-/* BANNER */
+/* ─── BANNER ──────────────────────────────────────────────────────────── */
 .sg-banner {
-  display: flex; align-items: center; gap: 12px;
-  padding: 12px 16px; margin: 16px 0;
-  background: linear-gradient(90deg, rgba(210, 153, 34, 0.06), rgba(210, 153, 34, 0.02));
-  border: 1px solid rgba(210, 153, 34, 0.25);
-  border-left: 3px solid var(--reward);
-  color: var(--text-primary); font-size: 12px;
+  display: flex !important; align-items: center !important; gap: 12px !important;
+  padding: 12px 16px !important; margin: 16px 0 !important;
+  background: linear-gradient(90deg, rgba(210, 153, 34, 0.06), rgba(210, 153, 34, 0.02)) !important;
+  border: 1px solid rgba(210, 153, 34, 0.25) !important;
+  border-left: 3px solid var(--reward) !important;
+  color: var(--text-primary) !important; font-size: 12px !important;
 }
-.sg-banner-icon { color: var(--reward); font-weight: 700; }
-.sg-banner b { color: var(--reward); font-weight: 600; }
+.sg-banner-icon { color: var(--reward) !important; font-weight: 700 !important; font-size: 16px !important; }
+.sg-banner b { color: var(--reward) !important; font-weight: 600 !important; }
 
-/* PANELS — the two config columns */
-.sg-panel {
+/* ─── CONFIG GRID — TWO COLUMNS ──────────────────────────────────────── */
+.sg-config-row { gap: 16px !important; align-items: stretch !important; }
+.sg-panel-col {
   background: var(--bg-panel) !important;
   border: 1px solid var(--border) !important;
-  padding: 18px !important;
+  padding: 18px !important; border-radius: 0 !important;
+  min-width: 0 !important;
 }
+.sg-panel-col > .gap, .sg-panel-col .form { gap: 12px !important; }
 .sg-panel-label {
-  color: var(--text-dim); font-size: 10px;
-  letter-spacing: 0.2em; text-transform: uppercase;
-  margin-bottom: 14px; display: flex; align-items: center; gap: 8px;
+  color: var(--text-dim) !important; font-size: 10px !important;
+  letter-spacing: 0.2em !important; text-transform: uppercase !important;
+  margin-bottom: 14px !important; display: flex !important;
+  align-items: center !important; gap: 8px !important;
 }
 .sg-panel-label::before { content: '▸'; color: var(--brand); }
 
-/* override gradio defaults inside .sg-panel */
-.sg-panel .gradio-container,
-.sg-panel .form, .sg-panel .block,
-.sg-panel input, .sg-panel select, .sg-panel textarea {
-  background: var(--bg-input) !important;
-  color: var(--text-primary) !important;
-  font-size: 12px !important;
-}
-.sg-panel label span { color: var(--text-secondary) !important; font-size: 10px !important; }
-.sg-panel input:focus, .sg-panel select:focus, .sg-panel textarea:focus {
-  border-color: var(--action) !important;
-}
-
-/* TIER RADIO — styled to look like cards */
-.sg-tier-radio .wrap label {
-  display: grid !important;
-  grid-template-columns: 24px 1fr auto !important;
-  gap: 10px !important;
-  align-items: start !important;
-  padding: 12px 14px !important;
+/* ─── INPUTS — token / model / provider key ──────────────────────────── */
+.sg-panel-col .form, .sg-panel-col .block { background: transparent !important; }
+.sg-panel-col input,
+.sg-panel-col textarea,
+.sg-panel-col select {
   background: var(--bg-input) !important;
   border: 1px solid var(--border) !important;
-  margin-bottom: 8px !important;
-  cursor: pointer !important;
-  border-radius: 0 !important;
+  color: var(--text-primary) !important;
+  font-family: var(--mono) !important; font-size: 12px !important;
+  padding: 8px 10px !important; border-radius: 0 !important;
+  box-shadow: none !important;
 }
-.sg-tier-radio .wrap label:hover {
+.sg-panel-col input:focus,
+.sg-panel-col textarea:focus,
+.sg-panel-col select:focus {
+  border-color: var(--action) !important; outline: none !important;
+}
+.sg-panel-col input::placeholder, .sg-panel-col textarea::placeholder {
+  color: var(--text-faint) !important;
+}
+/* Field labels — Gradio renders <label><span>LABEL</span> ...</label> */
+.sg-panel-col label > span:first-child,
+.sg-panel-col .label-wrap > span,
+.sg-panel-col .label-wrap span {
+  color: var(--text-secondary) !important;
+  font-size: 10px !important;
+  letter-spacing: 0.12em !important;
+  text-transform: uppercase !important;
+  font-weight: 500 !important;
+  margin-bottom: 5px !important;
+}
+.sg-panel-col label { background: transparent !important; }
+
+/* Dropdown chevron + body */
+.sg-panel-col .dropdown,
+.sg-panel-col .wrap-inner,
+.sg-panel-col .options {
+  background: var(--bg-input) !important;
+  border: 1px solid var(--border) !important;
+  color: var(--text-primary) !important;
+}
+.sg-panel-col .dropdown ul li:hover,
+.sg-panel-col .options li:hover {
+  background: var(--bg-input-hover) !important;
+}
+
+/* ─── TIER CARDS — 3 styled buttons ──────────────────────────────────── */
+.sg-tier-list, .sg-tier-list .form, .sg-tier-list .gap {
+  display: flex !important; flex-direction: column !important; gap: 8px !important;
+  background: transparent !important;
+}
+.sg-tier-card { width: 100% !important; }
+.sg-tier-card button {
+  display: block !important;
+  padding: 14px 16px !important;
+  background: var(--bg-input) !important;
+  border: 1px solid var(--border) !important;
+  color: var(--text-secondary) !important;
+  font-family: var(--mono) !important; font-size: 11.5px !important;
+  font-weight: 400 !important;
+  text-align: left !important; cursor: pointer !important;
+  width: 100% !important; min-height: auto !important;
+  border-radius: 0 !important; box-shadow: none !important;
+  transition: all 0.15s ease !important;
+  white-space: pre-line !important;
+  line-height: 1.55 !important;
+  letter-spacing: 0 !important;
+  text-transform: none !important;
+}
+.sg-tier-card button::first-line {
+  color: var(--text-primary) !important;
+  font-weight: 700 !important;
+  font-size: 13px !important;
+  letter-spacing: 0.06em !important;
+  text-transform: uppercase !important;
+  line-height: 2 !important;
+}
+.sg-tier-card button:hover {
   background: var(--bg-input-hover) !important;
   border-color: var(--border-strong) !important;
 }
-.sg-tier-radio input[type="radio"] { accent-color: var(--action) !important; }
-.sg-tier-radio .wrap label[data-testid*="selected"],
-.sg-tier-radio .wrap label.selected {
+.sg-tier-card-selected button {
   background: rgba(88, 166, 255, 0.06) !important;
   border-color: var(--action) !important;
   box-shadow: inset 2px 0 0 var(--action) !important;
 }
+.sg-tier-card-selected button::first-line {
+  color: var(--action) !important;
+}
 
-/* TERMINAL */
+/* ─── TERMINAL ────────────────────────────────────────────────────────── */
 .sg-terminal {
   background: var(--bg-panel);
   border: 1px solid var(--border);
   margin-bottom: 16px;
+  position: relative;
 }
 .sg-terminal-chrome {
   display: flex; align-items: center; gap: 12px;
@@ -357,11 +444,15 @@ body, .gradio-container, button, input, select, textarea,
 .sg-chrome-dots span:nth-child(1) { background: rgba(248, 81, 73, 0.7); }
 .sg-chrome-dots span:nth-child(2) { background: rgba(210, 153, 34, 0.7); }
 .sg-chrome-dots span:nth-child(3) { background: rgba(63, 185, 80, 0.7); }
-.sg-chrome-status { flex: 1; text-align: center; color: var(--text-secondary); letter-spacing: 0.08em; }
+.sg-chrome-status {
+  flex: 1; text-align: center;
+  color: var(--text-secondary); letter-spacing: 0.08em;
+}
 .sg-chrome-status .live { color: var(--success); }
 .sg-chrome-status .live::before {
   content: '●'; margin-right: 6px; animation: sg-pulse 1.6s ease-in-out infinite;
 }
+.sg-chrome-status .em { color: var(--text-primary); font-weight: 500; }
 .sg-chrome-meta { color: var(--text-dim); font-size: 11px; }
 .sg-terminal-body {
   padding: 18px 20px 22px;
@@ -371,6 +462,7 @@ body, .gradio-container, button, input, select, textarea,
   background-image: linear-gradient(transparent 50%, rgba(255, 255, 255, 0.012) 50%);
   background-size: 100% 3px;
   min-height: 480px; max-height: 64vh; overflow-y: auto;
+  color: var(--text-primary);
 }
 .sg-terminal-body .ts  { color: var(--timestamp); }
 .sg-terminal-body .ax  { color: var(--action); }
@@ -388,69 +480,112 @@ body, .gradio-container, button, input, select, textarea,
 }
 @keyframes sg-blink { 50% { opacity: 0; } }
 
-/* CONTROLS + METRICS */
+/* ─── CONTROLS ROW ────────────────────────────────────────────────────── */
 .sg-controls-row {
-  padding: 14px 16px; background: var(--bg-panel) !important;
-  border: 1px solid var(--border) !important; margin-bottom: 16px;
+  padding: 14px 16px !important;
+  background: var(--bg-panel) !important;
+  border: 1px solid var(--border) !important;
+  margin-bottom: 16px !important;
+  align-items: center !important; gap: 24px !important;
+}
+.sg-btn-group { gap: 8px !important; flex-wrap: nowrap !important; }
+.sg-btn-primary, .sg-btn-secondary {
+  flex: 0 0 auto !important; min-width: auto !important;
+}
+.sg-btn-primary button, .sg-btn-secondary button {
+  font-family: var(--mono) !important; font-size: 12px !important;
+  font-weight: 600 !important; letter-spacing: 0.06em !important;
+  text-transform: uppercase !important;
+  padding: 9px 16px !important; border-radius: 0 !important;
+  box-shadow: none !important; min-height: auto !important;
+  cursor: pointer !important; transition: all 0.15s ease !important;
 }
 .sg-btn-primary button {
   background: rgba(63, 185, 80, 0.12) !important;
   border: 1px solid var(--success) !important;
   color: var(--success) !important;
-  font-weight: 600 !important; letter-spacing: 0.06em !important;
-  text-transform: uppercase !important;
 }
-.sg-btn-primary button:hover { background: rgba(63, 185, 80, 0.2) !important; }
+.sg-btn-primary button:hover { background: rgba(63, 185, 80, 0.20) !important; }
 .sg-btn-secondary button {
   background: var(--bg-input) !important;
   border: 1px solid var(--border-strong) !important;
   color: var(--text-primary) !important;
-  font-weight: 600 !important; letter-spacing: 0.06em !important;
-  text-transform: uppercase !important;
 }
-.sg-btn-secondary button:hover { background: var(--bg-input-hover) !important; }
+.sg-btn-secondary button:hover {
+  background: var(--bg-input-hover) !important;
+  border-color: var(--border-focus) !important;
+}
+
+/* ─── METRICS BAR ─────────────────────────────────────────────────────── */
+/* The HTML sits inside Gradio's html-container — force flex on both. */
+.sg-metrics-host > div, .sg-metrics-host .prose { background: transparent !important; }
 .sg-metrics {
-  display: flex; align-items: center; gap: 22px;
-  color: var(--text-secondary); font-size: 11px; flex-wrap: wrap;
-  padding: 10px 0;
+  display: flex !important; align-items: center !important;
+  gap: 24px !important; flex-wrap: wrap !important;
+  color: var(--text-secondary) !important; font-size: 11px !important;
+  padding: 4px 0 !important;
 }
-.sg-metric { display: flex; gap: 6px; align-items: center; }
+.sg-metric {
+  display: flex !important; gap: 6px !important; align-items: center !important;
+}
 .sg-metric .label {
-  text-transform: uppercase; letter-spacing: 0.12em; color: var(--text-dim);
+  text-transform: uppercase !important; letter-spacing: 0.12em !important;
+  color: var(--text-dim) !important;
 }
-.sg-metric .value { color: var(--text-primary); font-weight: 600; }
-.sg-metric .value.r { color: var(--reward); }
-.sg-metric .value.s { color: var(--success); }
+.sg-metric .value {
+  color: var(--text-primary) !important; font-weight: 600 !important;
+}
+.sg-metric .value.r { color: var(--reward) !important; }
+.sg-metric .value.s { color: var(--success) !important; }
 .sg-rubric {
-  display: flex; align-items: center; gap: 14px;
-  padding-left: 18px; margin-left: 4px;
-  border-left: 1px solid var(--border);
+  display: flex !important; align-items: center !important; gap: 14px !important;
+  padding-left: 18px !important; margin-left: 4px !important;
+  border-left: 1px solid var(--border) !important;
 }
 .sg-rubric-cell {
-  display: flex; flex-direction: column; gap: 4px; min-width: 56px;
+  display: flex !important; flex-direction: column !important;
+  gap: 4px !important; min-width: 56px !important;
 }
 .sg-rubric-cell .label {
-  font-size: 9px; text-transform: uppercase; letter-spacing: 0.14em;
-  color: var(--text-dim);
+  font-size: 9px !important; text-transform: uppercase !important;
+  letter-spacing: 0.14em !important; color: var(--text-dim) !important;
 }
-.sg-rubric-cell .value { color: var(--text-primary); font-weight: 600; font-size: 11px; }
+.sg-rubric-cell .value {
+  color: var(--text-primary) !important; font-weight: 600 !important;
+  font-size: 11px !important;
+}
 .sg-rubric-bar {
-  height: 3px; background: var(--bg-input); overflow: hidden; margin-top: 2px;
+  height: 3px !important; background: var(--bg-input) !important;
+  overflow: hidden !important; margin-top: 2px !important;
 }
-.sg-rubric-bar > div { height: 100%; background: var(--success); }
+.sg-rubric-bar > div { height: 100% !important; background: var(--success) !important; }
 
-/* FOOTER */
+/* ─── TIER DESCRIPTION (under the cards) ──────────────────────────────── */
+.sg-tier-desc, .sg-tier-desc * {
+  color: var(--text-secondary) !important;
+  font-size: 11px !important;
+  font-style: italic !important;
+}
+.sg-tier-desc { padding: 12px 0 0 !important; }
+
+/* ─── FOOTER ──────────────────────────────────────────────────────────── */
 .sg-footer {
-  padding: 18px 0 28px; color: var(--text-dim); font-size: 10px;
-  letter-spacing: 0.06em;
-  display: flex; justify-content: space-between;
-  border-top: 1px solid var(--border);
+  padding: 18px 0 28px !important; color: var(--text-dim) !important;
+  font-size: 10px !important; letter-spacing: 0.06em !important;
+  display: flex !important; justify-content: space-between !important;
+  border-top: 1px solid var(--border) !important;
 }
-.sg-footer a { color: var(--text-secondary); text-decoration: none; }
-.sg-footer a:hover { color: var(--text-primary); }
+.sg-footer a { color: var(--text-secondary) !important; text-decoration: none !important; }
+.sg-footer a:hover { color: var(--text-primary) !important; }
 
+/* ─── HIDE GRADIO LABEL CHROME WHERE WE PROVIDE OUR OWN ───────────────── */
+.sg-no-label > .label-wrap, .sg-no-label > label > span:first-child { display: none !important; }
+.sg-no-label .form { padding: 0 !important; }
+
+/* ─── RESPONSIVE ──────────────────────────────────────────────────────── */
 @media (max-width: 960px) {
-  .sg-rubric { border-left: none; padding-left: 0; }
+  .sg-rubric { border-left: none !important; padding-left: 0 !important; }
+  .sg-config-row { flex-direction: column !important; }
 }
 """
 
@@ -516,9 +651,11 @@ FOOTER_HTML = """
   <div>
     built for the openenv hackathon · india apr '26
     &nbsp;·&nbsp;
-    <a href="https://github.com/dakshdoesdev/sre-enginnerllm" target="_blank">github</a>
+    <a href="https://github.com/Madhav-GPT/sre-env" target="_blank">github</a>
     &nbsp;·&nbsp;
     <a href="https://huggingface.co/spaces/Madhav189/sre-env" target="_blank">hf space</a>
+    &nbsp;·&nbsp;
+    <a href="https://github.com/Madhav-GPT/sre-env/blob/main/BLOG.md" target="_blank">blog</a>
   </div>
   <div>multi-rubric reward · RLVE procgen · MCP dual-route</div>
 </footer>
@@ -968,6 +1105,33 @@ def on_tier_change(tier_value: str, current_model: str) -> tuple[Any, Any]:
 
 
 # ---------------------------------------------------------------------------
+# Tier-card click handlers — return per-card class updates so only the
+# active one renders with the blue accent. Returns 7 updates in order:
+#   tier_state, basic_card, advanced_card, max_card, model, tier_desc
+# ---------------------------------------------------------------------------
+
+
+def _select_tier(target: str, current_model: str) -> tuple[Any, ...]:
+    target = (target or "basic").lower()
+    desc_value = f"_{TIER_DESCRIPTION.get(target, '')}_"
+
+    def card_classes(name: str) -> list[str]:
+        base = ["sg-tier-card"]
+        if name == target:
+            base.append("sg-tier-card-selected")
+        return base
+
+    return (
+        target,
+        gr.update(elem_classes=card_classes("basic")),
+        gr.update(elem_classes=card_classes("advanced")),
+        gr.update(elem_classes=card_classes("max")),
+        gr.update(value=_suggest_model(target, current_model)),
+        gr.update(value=desc_value),
+    )
+
+
+# ---------------------------------------------------------------------------
 # Build the Gradio Blocks app.
 # ---------------------------------------------------------------------------
 
@@ -977,33 +1141,61 @@ def build_app() -> gr.Blocks:
     session = _session_id()
     basic_count = len(_basic_holdout())
 
-    with gr.Blocks(title="sre-gym") as demo:
+    # We inject the stylesheet via a top-level <style> tag in gr.HTML rather
+    # than the `gr.Blocks(css=...)` argument: Gradio 6.0 deprecated css= on
+    # the constructor in favour of launch(css=...), and we don't call launch()
+    # because we mount onto an existing FastAPI app. A <style> tag works
+    # identically on 4.x and 6.x.
+    with gr.Blocks(title="sre-gym", analytics_enabled=False) as demo:
+        gr.HTML(f"<style>{CSS}</style>")
+        # ── chrome ─────────────────────────────────────────────────
         gr.HTML(_header_html())
         gr.HTML(_build_strip_html(session, basic_count))
         gr.HTML(BANNER_HTML)
 
-        # gr.State holders for credentials. Never persisted, never logged.
+        # gr.State holders for credentials + selected tier.
+        # Never persisted server-side, never logged.
+        tier_state = gr.State(initial_tier)
         hf_token_state = gr.State("")
         provider_key_state = gr.State("")
 
-        with gr.Row(equal_height=True):
-            # ---- COLUMN A — TIER ----
-            with gr.Column(scale=1, min_width=240, elem_classes=["sg-panel"]):
+        # ── two-column config grid ─────────────────────────────────
+        with gr.Row(elem_classes=["sg-config-row"]):
+            # COLUMN A — TIER (clickable cards)
+            with gr.Column(scale=1, min_width=320, elem_classes=["sg-panel-col"]):
                 gr.HTML('<div class="sg-panel-label">tier</div>')
-                tier_radio = gr.Radio(
-                    choices=[("BASIC", "basic"), ("ADVANCED", "advanced"), ("MAX", "max")],
-                    value=initial_tier,
-                    label="",
-                    interactive=True,
-                    elem_classes=["sg-tier-radio"],
-                )
+                with gr.Column(elem_classes=["sg-tier-list"]):
+                    basic_card = gr.Button(
+                        value=(
+                            "● BASIC\n"
+                            "escalates compute · 12 templates × 5 procgen variants · "
+                            "single bounded incident"
+                        ),
+                        elem_classes=["sg-tier-card", "sg-tier-card-selected"],
+                    )
+                    advanced_card = gr.Button(
+                        value=(
+                            "○ ADVANCED\n"
+                            "escalates horizon · chained incidents · "
+                            "persistent state across episodes"
+                        ),
+                        elem_classes=["sg-tier-card"],
+                    )
+                    max_card = gr.Button(
+                        value=(
+                            "○ MAX\n"
+                            "escalates realism · 22-service ecommerce sim · "
+                            "11 chaos patterns"
+                        ),
+                        elem_classes=["sg-tier-card"],
+                    )
                 tier_desc = gr.Markdown(
                     f"_{TIER_DESCRIPTION[initial_tier]}_",
-                    elem_classes=["sg-metric"],
+                    elem_classes=["sg-tier-desc"],
                 )
 
-            # ---- COLUMN B — MODEL & KEYS ----
-            with gr.Column(scale=2, min_width=420, elem_classes=["sg-panel"]):
+            # COLUMN B — MODEL & KEYS
+            with gr.Column(scale=2, min_width=440, elem_classes=["sg-panel-col"]):
                 gr.HTML('<div class="sg-panel-label">model &amp; keys</div>')
                 hf_token_input = gr.Textbox(
                     label="HF TOKEN  (required)",
@@ -1012,11 +1204,11 @@ def build_app() -> gr.Blocks:
                     interactive=True,
                 )
                 with gr.Row():
-                    # Provider dropdown is informational at the moment — every model
-                    # call goes through the HF Inference Router for now. Keeping the
-                    # widget makes the addendum's spec match the rendered UI; future
-                    # tier-specific routing can wire it through.
-                    _provider_dropdown = gr.Dropdown(  # noqa: F841 - reserved for routing
+                    # Provider dropdown is informational at the moment — every
+                    # model call goes through the HF Inference Router. Keeping
+                    # the widget matches the spec; future tier-specific routing
+                    # can wire it through.
+                    _provider_dropdown = gr.Dropdown(  # noqa: F841 - reserved
                         choices=["HF Inference", "Anthropic", "OpenAI", "Together",
                                  "Fireworks", "Groq", "DeepSeek"],
                         value="HF Inference",
@@ -1036,36 +1228,64 @@ def build_app() -> gr.Blocks:
                     interactive=True,
                 )
 
-        # ---- TERMINAL ----
+        # ── terminal pane ──────────────────────────────────────────
         terminal = gr.HTML(_initial_terminal_html(), elem_id="sg-terminal-host")
 
-        # ---- CONTROLS + METRICS ----
+        # ── controls + metrics row ────────────────────────────────
         with gr.Row(elem_classes=["sg-controls-row"]):
             with gr.Column(scale=0, min_width=280):
-                with gr.Row():
-                    run_btn = gr.Button("▶  RUN EVAL", variant="primary", elem_classes=["sg-btn-primary"])
-                    stop_btn = gr.Button("■  STOP", elem_classes=["sg-btn-secondary"])
-                    reset_btn = gr.Button("↻  RESET", elem_classes=["sg-btn-secondary"])
+                with gr.Row(elem_classes=["sg-btn-group"]):
+                    run_btn = gr.Button(
+                        "▶  RUN EVAL",
+                        variant="primary",
+                        elem_classes=["sg-btn-primary"],
+                    )
+                    stop_btn = gr.Button(
+                        "■  STOP",
+                        elem_classes=["sg-btn-secondary"],
+                    )
+                    reset_btn = gr.Button(
+                        "↻  RESET",
+                        elem_classes=["sg-btn-secondary"],
+                    )
             with gr.Column(scale=1):
-                metrics = gr.HTML(_metric_bar_html())
+                metrics = gr.HTML(
+                    _metric_bar_html(),
+                    elem_classes=["sg-metrics-host"],
+                )
 
         gr.HTML(FOOTER_HTML)
 
-        # ---- Event wiring ----
+        # ── event wiring ──────────────────────────────────────────
 
-        # Sync API keys into gr.State (NOT persisted server-side).
-        hf_token_input.change(lambda v: v, inputs=[hf_token_input], outputs=[hf_token_state])
-        provider_key_input.change(lambda v: v, inputs=[provider_key_input], outputs=[provider_key_state])
+        # Sync API keys into gr.State. Never persisted server-side.
+        hf_token_input.change(
+            lambda v: v, inputs=[hf_token_input], outputs=[hf_token_state]
+        )
+        provider_key_input.change(
+            lambda v: v, inputs=[provider_key_input], outputs=[provider_key_state]
+        )
 
-        tier_radio.change(
-            on_tier_change,
-            inputs=[tier_radio, model_input],
-            outputs=[model_input, tier_desc],
+        tier_outputs = [
+            tier_state, basic_card, advanced_card, max_card, model_input, tier_desc,
+        ]
+
+        basic_card.click(
+            lambda m: _select_tier("basic", m),
+            inputs=[model_input], outputs=tier_outputs,
+        )
+        advanced_card.click(
+            lambda m: _select_tier("advanced", m),
+            inputs=[model_input], outputs=tier_outputs,
+        )
+        max_card.click(
+            lambda m: _select_tier("max", m),
+            inputs=[model_input], outputs=tier_outputs,
         )
 
         run_event = run_btn.click(
             run_eval_handler,
-            inputs=[tier_radio, hf_token_state, model_input, provider_key_state],
+            inputs=[tier_state, hf_token_state, model_input, provider_key_state],
             outputs=[terminal, metrics],
         )
         stop_btn.click(None, None, None, cancels=[run_event])
@@ -1089,7 +1309,6 @@ def _build_combined_app() -> Any:
 
     blocks = build_app()
     blocks.queue(default_concurrency_limit=4)
-    blocks.css = CSS
     api_app = create_env_app()
     return mount_gradio_app(api_app, blocks, path="/")
 

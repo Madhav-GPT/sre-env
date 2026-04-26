@@ -47,9 +47,9 @@ def test_models_for_tier_returns_curated_list_for_each_tier() -> None:
             assert isinstance(entry.kind, ProviderKind)
 
 
-def test_basic_tier_default_is_trained_3b() -> None:
-    """The Basic tier's first entry should be the trained specialist."""
-    assert BASIC_MODELS[0].model_id == "dakshdoesdev/sre-gym-qwen25-3b-grpo"
+def test_triage_tier_default_is_qwen25_7b() -> None:
+    """The Triage tier's first entry should be the open-weight Qwen2.5-7B base."""
+    assert BASIC_MODELS[0].model_id == "Qwen/Qwen2.5-7B-Instruct"
 
 
 def test_advanced_tier_default_is_long_horizon_model() -> None:

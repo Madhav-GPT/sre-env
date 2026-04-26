@@ -53,16 +53,10 @@ class ModelEntry:
 
 BASIC_MODELS: tuple[ModelEntry, ...] = (
     ModelEntry(
-        label="trained 3B (sre-gym-qwen25-3b-grpo)",
-        model_id="dakshdoesdev/sre-gym-qwen25-3b-grpo",
-        kind=ProviderKind.HF,
-        note="default — the trained specialist (LoRA over Qwen2.5-3B-Instruct)",
-    ),
-    ModelEntry(
         label="Qwen2.5-7B-Instruct",
         model_id="Qwen/Qwen2.5-7B-Instruct",
         kind=ProviderKind.HF,
-        note="open-weight, runs anywhere with HF inference",
+        note="default — open-weight 7B base, runs anywhere with HF inference",
     ),
     ModelEntry(
         label="Llama-3.1-8B-Instruct",

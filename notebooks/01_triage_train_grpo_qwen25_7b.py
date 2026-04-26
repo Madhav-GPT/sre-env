@@ -12,42 +12,43 @@
 # ---
 
 # %% [markdown]
-# # sre-gym Triage — Qwen2.5-3B SFT → GRPO training notebook
+# # sre-gym Triage — Qwen2.5-7B SFT → GRPO training notebook
 #
-# **Target:** A100 80GB · ~90 min wall-clock · ~$3-4 in HF compute credits.
+# **Target:** A100 80GB · ~2-3h wall-clock · ~$5-8 in HF compute credits.
 #
 # ## Pipeline philosophy
 #
 # This notebook follows the OpenEnv hackathon best-practice recipe:
-#   1. **Light SFT** to teach JSON action format (~5 min, 50 steps)
-#   2. **GRPO** with verifiable env reward to drive real improvement (~30 min)
-#   3. **Eval sweep** showing baseline → SFT → GRPO progression (~25 min)
+#   1. **Light SFT** to teach JSON action format without saturating entropy
+#   2. **Memory-aware GRPO** with real env reward and only K=2 rollouts
+#   3. **Eval sweep** showing baseline → SFT → GRPO progression
 #
 # Key design choices to prevent the two failure modes (overfit / underfit):
 #   - **Diverse data**: 12 templates × 4 distinct evidence-gathering plans × 5
 #     procgen variants = 240 expert episodes (~89% unique prompt-response pairs
 #     after stratified sampling to 72 expert + 24 mediocre + 24 failure).
-#   - **Short SFT**: 50 steps × batch 16 ≈ 0.8 epoch — long enough for the model
-#     to learn the JSON format, short enough to leave entropy for GRPO.
+#   - **Short SFT**: keep the effective batch at 16 but lower the per-device
+#     batch so the 7B model still fits cleanly with eval and checkpointing.
 #   - **Short SFT instead of loss masking**: Qwen2.5's chat template lacks
 #     `{% generation %}` markers, so we can't use `assistant_only_loss=True`.
 #     50 steps × 0.8 epoch is short enough that even full-sequence loss won't
 #     overfit on diverse data.
-#   - **GRPO with strong KL anchor** (beta=0.1) and high rollout temperature
-#     (0.9) — keeps policy near SFT while preserving exploration variance.
+#   - **GRPO with 2 generations**: Unsloth's RL guidance requires at least two
+#     samples for GRPO, and memory cost scales with the number of generations,
+#     so we keep K=2 for the 7B run on one A100 80GB.
 #
 # ## How to run
 #
 # 1. **Run Cell 0 first** (idempotent — safe to re-run after kernel restart, ~5s).
-# 2. Then run cells 1–12 top to bottom.
+# 2. Then run cells 1–13 top to bottom.
 # 3. **After "Kernel → Restart"**: re-run Cell 0 + your target cell. Every cell
 #    imports what it needs.
 # 4. If a cell fails, read its printed **FIX** message.
 #
 # ## Resume points (skip done work)
-# - `outputs/sft_final/` exists → Cell 6 skips and loads from disk.
-# - `outputs/grpo_final/` exists → Cell 9 skips and loads from disk.
-# - `eval/results/comparison_raw.csv` exists → Cell 10 skips and reuses results.
+# - `outputs/qwen25_7b_sft_final/` exists → Cell 6 skips and loads from disk.
+# - `outputs/qwen25_7b_grpo_final/` exists → Cell 9 skips and loads from disk.
+# - `eval/results/qwen25_7b_comparison_raw.csv` exists → Cell 10 skips and reuses results.
 # - To force re-run, delete the corresponding artifact.
 
 # %% [markdown]
@@ -71,6 +72,9 @@ import os
 import subprocess
 import sys
 from pathlib import Path
+
+# Unsloth's standby mode reduces RL memory pressure during vLLM-backed GRPO.
+os.environ.setdefault("UNSLOTH_VLLM_STANDBY", "1")
 
 GITHUB_USER = "Madhav-GPT"
 REPO_NAME   = "sre-env"
@@ -211,9 +215,9 @@ print(f"GPU:        {device_name}")
 print(f"VRAM:       {vram_gb} GB")
 print(f"PyTorch:    {torch.__version__} (CUDA {torch.version.cuda})")
 
-if vram_gb < 70:
+if vram_gb < 75:
     raise RuntimeError(
-        f"\n  Need ≥70 GB VRAM for Qwen2.5-3B + K=4 GRPO; got {vram_gb} GB.\n"
+        f"\n  Need an A100 80GB-class GPU for Qwen2.5-7B + K=2 GRPO; got {vram_gb} GB.\n"
         f"  FIX: Space → Settings → upgrade to A100 80GB.\n"
     )
 print("\n✓ GPU check passed")
@@ -294,7 +298,7 @@ print("\n✓ Corpus sanity checks passed")
 # %% [markdown]
 # ## Cell 4 — Convert each step into a (prompt, completion) ChatML pair
 #
-# Drops steps with empty/short prompts, non-JSON responses, or >4096 tokens.
+# Drops steps with empty/short prompts, non-JSON responses, or >2048 tokens.
 
 # %%
 import json
@@ -304,24 +308,32 @@ import pandas as pd
 from datasets import Dataset
 from transformers import AutoTokenizer
 
-MODEL_NAME = "unsloth/Qwen2.5-3B-Instruct-bnb-4bit"
-MAX_SEQ_LEN = 4096
+MODEL_NAME = "unsloth/Qwen2.5-7B-Instruct-bnb-4bit"
+MAX_SEQ_LEN = 2048
 
 tokenizer_for_chat = AutoTokenizer.from_pretrained(MODEL_NAME)
 
 SFT_SYSTEM_PROMPT = """You are a senior SRE on-call agent inside the sre-gym Triage environment.
 
 Output EXACTLY one JSON object per turn — no prose, no markdown, no fences.
-The 11 actions are:
-  query_logs(service)            query_metrics(service, metric)
-  query_dependencies(service)    query_deploys(service)
-  rollback_deploy(service)       restart_service(service)
-  isolate_service(service)       run_check(check_name)
-  submit_hypothesis(hypothesis)  escalate
-  declare_resolved
+The JSON key for the action is "action_type" (NOT "action", NOT "type", NOT "tool").
 
-Services: api-gateway / cache / database / worker.
-metric in {cpu, error_rate, latency}; check_name in {database_recovery, end_to_end}.
+Examples (copy this exact shape):
+  {"action_type":"query_logs","service":"worker"}
+  {"action_type":"query_metrics","service":"database","metric":"error_rate"}
+  {"action_type":"run_check","check_name":"end_to_end"}
+  {"action_type":"rollback_deploy","service":"worker"}
+  {"action_type":"submit_hypothesis","hypothesis":{"root_cause":"bad_worker_deploy","affected_services":["worker"],"confidence":0.7,"recommended_next_action":"rollback_deploy"}}
+  {"action_type":"declare_resolved"}
+
+The 11 valid action_type values are:
+  query_logs, query_metrics, query_dependencies, query_deploys,
+  rollback_deploy, restart_service, isolate_service, run_check,
+  submit_hypothesis, escalate, declare_resolved.
+
+Services: api-gateway / cache / database / worker (no others).
+metric in {cpu, error_rate, latency} (no others).
+check_name in {database_recovery, end_to_end} (no others).
 
 A successful episode looks like: gather evidence -> submit_hypothesis -> rollback ->
 restart -> both run_checks pass -> declare_resolved. Wrong rollback / premature
@@ -366,17 +378,17 @@ sft_dataset = sft_dataset.shuffle(seed=42)
 print(f"\n✓ Built SFT dataset: {len(sft_dataset)} examples")
 
 # %% [markdown]
-# ## Cell 5 — Load Qwen2.5-3B-Instruct (4-bit + LoRA r=32)
+# ## Cell 5 — Load Qwen2.5-7B-Instruct (4-bit + LoRA r=32)
 #
-# Smaller LoRA (r=32 vs r=64 in typical recipes) — less capacity to memorize
-# our 999-step corpus. lora_dropout=0.1 adds explicit regularization.
+# Keep the LoRA adapter small; the extra capacity comes from the larger base
+# model, while the smaller adapter preserves headroom for GRPO on one A100.
 # Skips download if already cached. ~3 min cold, <30 sec warm.
 
 # %%
 from unsloth import FastLanguageModel
 
-MODEL_NAME = "unsloth/Qwen2.5-3B-Instruct-bnb-4bit"
-MAX_SEQ_LEN = 4096
+MODEL_NAME = "unsloth/Qwen2.5-7B-Instruct-bnb-4bit"
+MAX_SEQ_LEN = 2048
 
 model, tokenizer = FastLanguageModel.from_pretrained(
     model_name=MODEL_NAME,
@@ -386,13 +398,13 @@ model, tokenizer = FastLanguageModel.from_pretrained(
 )
 model = FastLanguageModel.get_peft_model(
     model,
-    r=32,                         # was 64 — smaller LoRA = less capacity to memorize
+    r=32,                         # keep adapter modest; 7B capacity is in the base
     target_modules=[
         "q_proj", "k_proj", "v_proj", "o_proj",
         "gate_proj", "up_proj", "down_proj",
     ],
-    lora_alpha=64,                # alpha = 2× r is a common stable ratio
-    lora_dropout=0.1,             # was 0.0 — explicit regularization
+    lora_alpha=64,
+    lora_dropout=0.05,
     bias="none",
     use_gradient_checkpointing="unsloth",
     random_state=42,
@@ -410,14 +422,14 @@ model.print_trainable_parameters()
 # — that would zero out GRPO's exploration variance.
 #
 # Anti-overfit measures vs typical SFT recipes:
-#   - LoRA r=32, dropout=0.1 (small + regularized)
+#   - LoRA r=32, dropout=0.05 (small + lightly regularized — full 0.1 disables Unsloth's fast-patch path on 7B)
 #   - lr=5e-5 (gentle), warmup 10%, cosine schedule
 #   - 50 steps × batch 16 = 800 examples ≈ 0.8 epoch over our 999-step corpus
 #   - full-sequence loss (Qwen2.5's chat template lacks generation markers
 #     that would enable assistant_only_loss; the short SFT compensates)
 #   - load_best_model_at_end + eval_loss → auto-restores the best checkpoint
 #
-# **Resume:** if `outputs/sft_final/` exists, skips training and loads from disk.
+# **Resume:** if `outputs/qwen25_7b_sft_final/` exists, skips training and loads from disk.
 # To force re-train, delete the directory.
 
 # %%
@@ -426,7 +438,7 @@ from pathlib import Path
 
 from trl import SFTTrainer, SFTConfig
 
-SFT_OUT = Path("outputs/sft_final")
+SFT_OUT = Path("outputs/qwen25_7b_sft_final")
 
 if SFT_OUT.exists() and (SFT_OUT / "adapter_model.safetensors").exists():
     print(f"✓ SFT already trained at {SFT_OUT} — loading adapter weights")
@@ -440,9 +452,9 @@ else:
     print(f"SFT train: {len(train_ds)} | eval: {len(eval_ds)}")
 
     sft_args = SFTConfig(
-        output_dir="outputs/sft",
-        per_device_train_batch_size=4,
-        gradient_accumulation_steps=4,
+        output_dir="outputs/qwen25_7b_sft",
+        per_device_train_batch_size=2,
+        gradient_accumulation_steps=8,
         max_steps=50,                  # was 150 — short SFT to avoid memorization
         learning_rate=5e-5,            # was 1e-4 — gentler LR for small data
         warmup_ratio=0.10,             # was 0.05 — slower start
@@ -488,11 +500,11 @@ else:
     if final_perplexity < 1.3:
         print(f"⚠ Perplexity {final_perplexity:.3f} < 1.3 — policy may be too deterministic.")
         print("  Watch GRPO reward variance in first 10 steps.")
-        print("  If std≈0 across K=4 rollouts: abort GRPO, ship SFT-only.")
+        print("  If std≈0 across K=2 rollouts: abort GRPO, ship SFT-only.")
     elif final_perplexity > 5.0:
         raise RuntimeError(
             f"\n  Perplexity {final_perplexity:.3f} > 5.0 — SFT undercooked.\n"
-            f"  FIX: Delete outputs/sft_final/, bump max_steps to 100, re-run Cell 6."
+            f"  FIX: Delete outputs/qwen25_7b_sft_final/, bump max_steps to 100, re-run Cell 6."
         )
     elif 1.5 <= final_perplexity <= 3.0:
         print("✓ Perplexity in healthy band [1.5, 3.0] — proceed to GRPO")
@@ -525,16 +537,24 @@ from unified_incident_env.server.environment import UnifiedIncidentEnvironment
 SFT_SYSTEM_PROMPT = """You are a senior SRE on-call agent inside the sre-gym Triage environment.
 
 Output EXACTLY one JSON object per turn — no prose, no markdown, no fences.
-The 11 actions are:
-  query_logs(service)            query_metrics(service, metric)
-  query_dependencies(service)    query_deploys(service)
-  rollback_deploy(service)       restart_service(service)
-  isolate_service(service)       run_check(check_name)
-  submit_hypothesis(hypothesis)  escalate
-  declare_resolved
+The JSON key for the action is "action_type" (NOT "action", NOT "type", NOT "tool").
 
-Services: api-gateway / cache / database / worker.
-metric in {cpu, error_rate, latency}; check_name in {database_recovery, end_to_end}.
+Examples (copy this exact shape):
+  {"action_type":"query_logs","service":"worker"}
+  {"action_type":"query_metrics","service":"database","metric":"error_rate"}
+  {"action_type":"run_check","check_name":"end_to_end"}
+  {"action_type":"rollback_deploy","service":"worker"}
+  {"action_type":"submit_hypothesis","hypothesis":{"root_cause":"bad_worker_deploy","affected_services":["worker"],"confidence":0.7,"recommended_next_action":"rollback_deploy"}}
+  {"action_type":"declare_resolved"}
+
+The 11 valid action_type values are:
+  query_logs, query_metrics, query_dependencies, query_deploys,
+  rollback_deploy, restart_service, isolate_service, run_check,
+  submit_hypothesis, escalate, declare_resolved.
+
+Services: api-gateway / cache / database / worker (no others).
+metric in {cpu, error_rate, latency} (no others).
+check_name in {database_recovery, end_to_end} (no others).
 
 A successful episode looks like: gather evidence -> submit_hypothesis -> rollback ->
 restart -> both run_checks pass -> declare_resolved. Wrong rollback / premature
@@ -612,6 +632,31 @@ if str(Path(".").resolve()) not in sys.path:
 from unified_incident_env.models import UnifiedIncidentAction
 from unified_incident_env.server.environment import UnifiedIncidentEnvironment
 
+# Action types and their required fields — used by the partial-credit ladder.
+_VALID_ACTION_TYPES = {
+    "query_logs", "query_metrics", "query_dependencies", "query_deploys",
+    "rollback_deploy", "restart_service", "isolate_service",
+    "run_check", "submit_hypothesis", "escalate", "declare_resolved",
+}
+_QUERY_ACTIONS = {"query_logs", "query_metrics", "query_dependencies", "query_deploys"}
+_REQUIRES_SERVICE = {
+    "query_logs", "query_dependencies", "query_deploys",
+    "rollback_deploy", "restart_service", "isolate_service",
+}
+_VALID_SERVICES = {"api-gateway", "cache", "database", "worker"}
+_VALID_METRICS = {"cpu", "error_rate", "latency"}
+_VALID_CHECKS = {"database_recovery", "end_to_end"}
+
+# LLM-friendly aliases the SFT'd model hallucinates instead of exact schema names.
+_KEY_ALIASES = {
+    "action": "action_type", "actiontype": "action_type", "action_name": "action_type",
+    "type": "action_type", "tool": "action_type", "tool_name": "action_type",
+    "command": "action_type", "service_name": "service", "target": "service",
+    "metric_name": "metric", "check": "check_name", "check_id": "check_name",
+}
+
+_DEBUG_PRINTED = {"n": 0}
+
 
 def _extract_action_json(text):
     text = text.strip()
@@ -627,10 +672,130 @@ def _extract_action_json(text):
         return None
 
 
+def _normalize_action_dict(d):
+    """Remap common LLM key hallucinations to schema field names."""
+    if not isinstance(d, dict):
+        return d, 0
+    out = {}
+    n_corrections = 0
+    for k, v in d.items():
+        if k in _KEY_ALIASES:
+            mapped = _KEY_ALIASES[k]
+            if mapped not in d and mapped not in out:
+                out[mapped] = v
+                n_corrections += 1
+                continue
+            n_corrections += 1
+            continue
+        out[k] = v
+    return out, n_corrections
+
+
+def _grade_partial(action_dict):
+    """Partial-credit ladder for actions that fail strict schema validation."""
+    if not isinstance(action_dict, dict):
+        return -0.45
+    if "action_type" not in action_dict:
+        return -0.40
+    at = action_dict["action_type"]
+    if not isinstance(at, str):
+        return -0.35
+    if at not in _VALID_ACTION_TYPES:
+        return -0.30
+    if at in _REQUIRES_SERVICE and not action_dict.get("service"):
+        return -0.25
+    if at == "query_metrics" and (not action_dict.get("service") or not action_dict.get("metric")):
+        return -0.25
+    if at == "run_check" and not action_dict.get("check_name"):
+        return -0.25
+    if at == "submit_hypothesis" and not isinstance(action_dict.get("hypothesis"), dict):
+        return -0.25
+    if "service" in action_dict and action_dict["service"] not in _VALID_SERVICES:
+        return -0.20
+    if "metric" in action_dict and action_dict.get("metric") not in _VALID_METRICS:
+        return -0.15
+    if "check_name" in action_dict and action_dict.get("check_name") not in _VALID_CHECKS:
+        return -0.15
+    if at == "submit_hypothesis":
+        h = action_dict.get("hypothesis", {})
+        required = {"root_cause", "affected_services", "confidence", "recommended_next_action"}
+        if not required.issubset(h.keys()):
+            return -0.10
+    return -0.05
+
+
+def _first_action_bonus(action, obs, truth, recipe):
+    """Scenario-aware bonus for the model's first action.
+
+    The env's per-step shaping reward is small (~0.01 in absolute value), so
+    rollouts collapse to similar rewards even when they pick different
+    actions. This bonus reads truth.best_next_action and
+    remediation_recipe.rollback_target from the scenario and rewards the
+    model for matching expert behavior.
+
+    Returns a float in [-0.40, +0.50].
+    """
+    bonus = 0.0
+    at = action.action_type
+    affected = set(truth.get("affected_services") or [])
+    best = truth.get("best_next_action") or ""
+    true_root = truth.get("root_cause")
+    rollback_target = recipe.get("rollback_target")
+
+    # Strong rollback signal — the single most important first move
+    if at == "rollback_deploy":
+        if action.service == rollback_target:
+            bonus += 0.40
+        else:
+            bonus -= 0.30
+
+    # Strong hypothesis signal — second most important
+    if at == "submit_hypothesis" and action.hypothesis is not None:
+        h_root = getattr(action.hypothesis, "root_cause", None)
+        if h_root == true_root:
+            bonus += 0.35
+        else:
+            bonus -= 0.10
+
+    # Match to env's recommended next action
+    if at == best and at not in {"rollback_deploy", "submit_hypothesis"}:
+        bonus += 0.30
+
+    # Query the affected service vs a noise/non-affected service
+    if at in _QUERY_ACTIONS:
+        if action.service in affected:
+            bonus += 0.15
+        elif action.service in _VALID_SERVICES:
+            bonus -= 0.05  # querying a real service that's not actually affected
+
+    # declare_resolved — only valid if env confirms
+    if at == "declare_resolved":
+        if obs.incident_resolved:
+            bonus += 0.50
+        else:
+            bonus -= 0.30
+
+    # Escalation = giving up; small penalty
+    if at == "escalate":
+        bonus -= 0.10
+
+    return bonus
+
+
 def reward_fn(completions, prompts=None, **kwargs):
-    """Per-turn proxy reward. Returns one float per completion."""
+    """Per-turn proxy reward with scenario-aware first-action bonuses.
+
+    Composite score:
+      r = env_obs.reward                       # env shaping (~-0.02..+0.05)
+        + _first_action_bonus(...)             # scenario-aware (-0.40..+0.50)
+        + 0.50 if incident_resolved
+        - 0.20 if obs.failure_type
+        - 0.05 * n_aliases_used
+    """
     scenario_ids = kwargs.get("scenario_id") or [None] * len(completions)
     rewards = []
+    debug_samples = []
+
     for completion, scenario_id in zip(completions, scenario_ids):
         if scenario_id is None:
             rewards.append(0.0)
@@ -638,41 +803,114 @@ def reward_fn(completions, prompts=None, **kwargs):
         action_dict = _extract_action_json(completion)
         if action_dict is None:
             rewards.append(-0.5)
+            if _DEBUG_PRINTED["n"] < 3:
+                debug_samples.append((completion, action_dict, "json_extract_failed", -0.5, 0, 0.0))
             continue
+        normalized, n_aliases = _normalize_action_dict(action_dict)
         try:
-            action = UnifiedIncidentAction(**action_dict)
-        except Exception:
-            rewards.append(-0.3)
+            action = UnifiedIncidentAction(**normalized)
+        except Exception as exc:
+            r = _grade_partial(normalized)
+            rewards.append(r)
+            if _DEBUG_PRINTED["n"] < 3:
+                debug_samples.append((completion, normalized, f"schema_fail: {exc}", r, n_aliases, 0.0))
             continue
+
         env = UnifiedIncidentEnvironment()
         try:
             env.reset(scenario_id=scenario_id)
-            obs = env.step(action)
-        except Exception:
+        except Exception as exc:
             rewards.append(-0.2)
+            if _DEBUG_PRINTED["n"] < 3:
+                debug_samples.append((completion, normalized, f"env_reset_fail: {exc}", -0.2, n_aliases, 0.0))
             continue
-        r = float(obs.reward)
+
+        # Read truth BEFORE stepping (env mutates _episode each step)
+        scenario_dict = (env._episode or {}).get("scenario", {})
+        truth = scenario_dict.get("truth", {}) or {}
+        recipe = scenario_dict.get("remediation_recipe", {}) or {}
+
+        try:
+            obs = env.step(action)
+        except Exception as exc:
+            rewards.append(-0.2)
+            if _DEBUG_PRINTED["n"] < 3:
+                debug_samples.append((completion, normalized, f"env_step_fail: {exc}", -0.2, n_aliases, 0.0))
+            continue
+
+        env_r = float(obs.reward)
+        bonus = _first_action_bonus(action, obs, truth, recipe)
+
+        r = env_r + bonus
         if obs.failure_type:
-            r -= 0.2
+            r -= 0.20
         if obs.incident_resolved:
-            r += 0.5
+            r += 0.50
+        r -= 0.05 * n_aliases
         rewards.append(r)
+
+        if _DEBUG_PRINTED["n"] < 3:
+            tag = f"env_ok r={env_r:+.3f} bonus={bonus:+.3f}"
+            debug_samples.append((completion, normalized, tag, r, n_aliases, bonus))
+
+    if _DEBUG_PRINTED["n"] < 3 and debug_samples:
+        print("\n[reward_fn debug] First-call sample completions:")
+        for i, (comp, parsed, reason, r, n_a, bonus) in enumerate(debug_samples[:3]):
+            print(f"  ── sample {i} (reward={r:+.3f}, n_aliases={n_a}, {reason}) ──")
+            preview = comp[:300].replace("\n", " | ")
+            print(f"     completion: {preview!r}")
+            if parsed is not None:
+                print(f"     normalized: {parsed}")
+        _DEBUG_PRINTED["n"] = 3
+        print("[reward_fn debug] Reward composition:")
+        print("  r = env.reward + scenario_aware_bonus + resolved_bonus - failure_penalty - 0.05·n_aliases")
+        print("  Bonus rubric — pushes the model toward scenario-specific expert behavior:")
+        print("    +0.40 correct rollback / +0.35 correct hypothesis / +0.30 best_next_action match")
+        print("    +0.15 querying an affected service / +0.50 declare_resolved when actually resolved")
+        print("    -0.30 wrong rollback / premature declare_resolved")
+        print("    -0.10 wrong hypothesis / escalate / -0.05 querying a non-affected service\n")
+
     return rewards
 
 
-# Smoke test
-_test = reward_fn(['{"action_type":"query_deploys","service":"worker"}'],
-                  scenario_id=["worker_deploy_cascade"])
-print(f"Smoke test reward: {_test[0]:+.3f}")
-assert _test[0] > -0.5, "reward_fn smoke test failed"
-print("✓ reward_fn validated")
+# Smoke tests
+print("[smoke] reward_fn validation:")
+_t1 = reward_fn(['{"action_type":"query_deploys","service":"worker"}'],
+                scenario_id=["worker_deploy_cascade"])
+print(f"  query_deploys worker (right service):     {_t1[0]:+.3f}  (expect: positive — affected service bonus)")
+
+_t2 = reward_fn(['{"action_type":"query_deploys","service":"cache"}'],
+                scenario_id=["worker_deploy_cascade"])
+print(f"  query_deploys cache  (wrong service):     {_t2[0]:+.3f}  (expect: negative — non-affected penalty)")
+
+_t3 = reward_fn(['{"action_type":"rollback_deploy","service":"worker"}'],
+                scenario_id=["worker_deploy_cascade"])
+print(f"  rollback_deploy worker (correct target):  {_t3[0]:+.3f}  (expect: large positive)")
+
+_t4 = reward_fn(['{"action_type":"rollback_deploy","service":"cache"}'],
+                scenario_id=["worker_deploy_cascade"])
+print(f"  rollback_deploy cache  (wrong target):    {_t4[0]:+.3f}  (expect: large negative)")
+
+_t5 = reward_fn(['{"action_type":"declare_resolved"}'],
+                scenario_id=["worker_deploy_cascade"])
+print(f"  declare_resolved (premature):             {_t5[0]:+.3f}  (expect: negative)")
+
+# Validate spread — these 5 should be 5 distinct values for GRPO variance
+unique = sorted({round(t[0], 2) for t in [_t1, _t2, _t3, _t4, _t5]})
+print(f"  Distinct reward levels across 5 actions:  {len(unique)} ({unique})")
+assert len(unique) >= 4, "Reward function must give clearly distinct values for K=2 GRPO variance"
+
+# Reset debug counter so the first real GRPO call still gets to print
+_DEBUG_PRINTED["n"] = 0
+print("✓ reward_fn validated (scenario-aware first-action bonuses + alias normalization + partial ladder)")
 
 # %% [markdown]
-# ## Cell 9 — GRPO online training (50 steps × K=4)
+# ## Cell 9 — GRPO online training (40 steps × K=2)
 #
-# Wall-clock: ~30-45 min on A100 with vLLM. Watch:
+# Wall-clock: ~30-45 min on A100 (vLLM path), ~90 min on transformers fallback.
+# Watch:
 #   - **reward mean** should rise from ~0 → ~0.4 by step 30
-#   - **reward std** must be > 0.05 in steps 1-5 (else K=4 rollouts are
+#   - **reward std** must be > 0.05 in steps 1-5 (else K=2 rollouts are
 #     identical and GRPO has no advantage signal — abort and ship SFT-only)
 #   - if reward flatlines after step 25, interrupt — no more signal
 #
@@ -682,39 +920,86 @@ print("✓ reward_fn validated")
 #   - lr=1e-6 (was 5e-6) — gentler updates
 #   - top_p=0.95 — nucleus sampling for stability
 #
-# **Resume:** if `outputs/grpo_final/` exists, skips training.
-# **Fallback:** if vLLM crashes, retries with `use_vllm=False` (~3× slower).
+# **vLLM rollouts** are auto-detected:
+#   - If Cell 5 loaded the model with `fast_inference=True`, the model exposes
+#     `model.vllm_engine` and we use vLLM (3× faster).
+#   - Otherwise we fall back to transformers `model.generate` — slower but
+#     always works. **No retry loop** — a single attempt with the right setting
+#     avoids the `EADDRINUSE` collision on `MASTER_PORT` that the old try/except
+#     fallback caused after a failed init.
+#
+# **Resume:** if `outputs/qwen25_7b_grpo_final/` exists, skips training.
+#
+# **If you hit `EADDRINUSE` on MASTER_PORT after a previous broken run:**
+# restart the kernel, re-run Cell 0 + Cells 1–8, then re-run this cell. The
+# defensive `destroy_process_group()` below clears any in-process state, but a
+# port left bound by a sub-process from a prior crash needs a kernel restart.
 
 # %%
+import os
 from pathlib import Path
 
-from trl import GRPOTrainer, GRPOConfig
+import torch.distributed as dist
+from trl import GRPOConfig, GRPOTrainer
 
-GRPO_OUT = Path("outputs/grpo_final")
+GRPO_OUT = Path("outputs/qwen25_7b_grpo_final")
+
+
+def _model_has_vllm_engine(m) -> bool:
+    """Return True iff the model exposes a working `vllm_engine` attribute.
+
+    Unsloth attaches `vllm_engine` only when `FastLanguageModel.from_pretrained`
+    was called with `fast_inference=True`. PEFT's `__getattr__` proxies through
+    the wrapper chain (PeftModelForCausalLM -> LoraModel -> base model) and
+    raises AttributeError at the bottom if no member supplies it. Probing via
+    try/except is the only safe way — `hasattr` swallows non-AttributeError
+    side effects in some torch builds.
+    """
+    try:
+        engine = m.vllm_engine
+    except AttributeError:
+        return False
+    return engine is not None
+
+
+def _cleanup_distributed():
+    """Drop any stale torch.distributed process group from a prior failed init.
+
+    The original Cell 9 wrapped GRPOTrainer in try/except and retried with
+    use_vllm=False on failure. But GRPOConfig.__post_init__ runs
+    `init_process_group` on the same MASTER_PORT, so the retry tripped
+    EADDRINUSE. We avoid retries entirely now, but we still call destroy
+    defensively in case the user re-runs this cell after a previous crash.
+    """
+    if dist.is_available() and dist.is_initialized():
+        try:
+            dist.destroy_process_group()
+        except Exception:
+            pass
 
 
 def _build_grpo_args(use_vllm: bool):
-    # GRPO config tuned for our small/uniform-ish dataset to maintain exploration:
+    # Tuned for our small/uniform-ish dataset to maintain exploration:
     #   - higher beta (KL penalty) keeps policy near SFT, prevents drift
-    #   - higher temperature in rollouts → more variance between K=4 generations
-    #     which is required for advantage signal (without it: std≈0, no learning)
+    #   - higher temperature in rollouts → more variance between K=2 generations
+    #     (without it: std≈0, no advantage signal, no learning)
     #   - lower LR is gentler since per-step KL penalty already constrains updates
     return GRPOConfig(
-        output_dir="outputs/grpo",
-        num_generations=4,
-        max_steps=50,                  # was 100 — short GRPO with diverse SFT
+        output_dir="outputs/qwen25_7b_grpo",
+        num_generations=2,
+        max_steps=40,
         learning_rate=1e-6,            # was 5e-6 — more stable
         per_device_train_batch_size=1,
         gradient_accumulation_steps=8,
         num_train_epochs=1,
-        max_prompt_length=2048,
-        max_completion_length=256,
+        max_prompt_length=1536,
+        max_completion_length=192,
         use_vllm=use_vllm,
-        vllm_gpu_memory_utilization=0.5 if use_vllm else 0.0,
+        vllm_gpu_memory_utilization=0.35 if use_vllm else 0.0,
         beta=0.1,                      # was 0.04 — stronger KL anchor
         temperature=0.9,               # was 0.7 — more rollout variance
         top_p=0.95,
-        logging_steps=2,               # log every 2 steps to watch reward
+        logging_steps=2,
         save_strategy="steps",
         save_steps=10,
         save_total_limit=3,
@@ -726,33 +1011,41 @@ def _build_grpo_args(use_vllm: bool):
 
 if GRPO_OUT.exists() and (GRPO_OUT / "adapter_model.safetensors").exists():
     print(f"✓ GRPO already trained at {GRPO_OUT} — loading adapter weights")
-    from peft import PeftModel
-    # If model already has SFT LoRA loaded, swap to GRPO
     if hasattr(model, "load_adapter"):
         model.load_adapter(str(GRPO_OUT), adapter_name="default")
     print("Loaded GRPO adapter — skipping GRPO training")
 else:
-    print("Starting GRPO online training ...")
-    try:
-        grpo_trainer = GRPOTrainer(
-            model=model,
-            args=_build_grpo_args(use_vllm=True),
-            reward_funcs=[reward_fn],
-            train_dataset=grpo_prompts_ds,
-            processing_class=tokenizer,
+    # Pre-flight: vLLM rollouts only work if Cell 5 loaded the model with
+    # `fast_inference=True`. Detect once instead of try/except retry — the
+    # retry leaves a half-init process group that breaks the next attempt.
+    use_vllm = _model_has_vllm_engine(model)
+    if use_vllm:
+        print("✓ Detected `model.vllm_engine` — using vLLM rollouts (fast path)")
+    else:
+        print(
+            "ℹ vLLM engine not attached to model "
+            "(Cell 5 didn't set `fast_inference=True`). "
+            "Using transformers `model.generate` for GRPO rollouts — "
+            "~3× slower but always works. To enable vLLM next run, "
+            "re-load the model in Cell 5 with `fast_inference=True, "
+            "max_lora_rank=32, gpu_memory_utilization=0.35`."
         )
-        grpo_trainer.train()
-    except Exception as exc:
-        print(f"\n⚠ vLLM path failed: {exc}")
-        print("Retrying without vLLM (slower but more compatible) ...")
-        grpo_trainer = GRPOTrainer(
-            model=model,
-            args=_build_grpo_args(use_vllm=False),
-            reward_funcs=[reward_fn],
-            train_dataset=grpo_prompts_ds,
-            processing_class=tokenizer,
-        )
-        grpo_trainer.train()
+
+    # Pin a deterministic MASTER_PORT/MASTER_ADDR so a botched init from a
+    # prior cell can't collide and trigger EADDRINUSE.
+    os.environ.setdefault("MASTER_ADDR", "127.0.0.1")
+    os.environ.setdefault("MASTER_PORT", "29500")
+    _cleanup_distributed()
+
+    print(f"Starting GRPO online training (use_vllm={use_vllm}) ...")
+    grpo_trainer = GRPOTrainer(
+        model=model,
+        args=_build_grpo_args(use_vllm=use_vllm),
+        reward_funcs=[reward_fn],
+        train_dataset=grpo_prompts_ds,
+        processing_class=tokenizer,
+    )
+    grpo_trainer.train()
 
     grpo_trainer.save_model(str(GRPO_OUT))
     print(f"✓ Saved to {GRPO_OUT}")
@@ -761,10 +1054,10 @@ else:
 # ## Cell 10 — Eval comparison sweep
 #
 # Up to 5 policies × 12 holdout × 3 seeds. Saves to
-# `eval/results/comparison_raw.csv`. Skips if results already exist.
+# `eval/results/qwen25_7b_comparison_raw.csv`. Skips if results already exist.
 #
 # **Robust to missing artifacts:**
-#   - If `outputs/grpo_final/` doesn't exist (user skipped GRPO due to
+#   - If `outputs/qwen25_7b_grpo_final/` doesn't exist (user skipped GRPO due to
 #     collapse), the GRPO row is omitted automatically.
 #   - If loading SFT-only as a second model fails (OOM), the SFT-only row is
 #     omitted and we still report random/heuristic/scripted/grpo.
@@ -786,24 +1079,32 @@ from unified_incident_env.models import UnifiedIncidentAction
 from unified_incident_env.server.environment import UnifiedIncidentEnvironment
 from unified_incident_env.server.challenge import list_baselines
 
-EVAL_CSV = Path("eval/results/comparison_raw.csv")
-MAX_SEQ_LEN = 4096
+EVAL_CSV = Path("eval/results/qwen25_7b_comparison_raw.csv")
+MAX_SEQ_LEN = 2048
 
 # System prompt — duplicated from Cell 4 so this cell is self-contained
 # (survives kernel restart if user re-runs only this cell after Cell 0).
 SFT_SYSTEM_PROMPT = """You are a senior SRE on-call agent inside the sre-gym Triage environment.
 
 Output EXACTLY one JSON object per turn — no prose, no markdown, no fences.
-The 11 actions are:
-  query_logs(service)            query_metrics(service, metric)
-  query_dependencies(service)    query_deploys(service)
-  rollback_deploy(service)       restart_service(service)
-  isolate_service(service)       run_check(check_name)
-  submit_hypothesis(hypothesis)  escalate
-  declare_resolved
+The JSON key for the action is "action_type" (NOT "action", NOT "type", NOT "tool").
 
-Services: api-gateway / cache / database / worker.
-metric in {cpu, error_rate, latency}; check_name in {database_recovery, end_to_end}.
+Examples (copy this exact shape):
+  {"action_type":"query_logs","service":"worker"}
+  {"action_type":"query_metrics","service":"database","metric":"error_rate"}
+  {"action_type":"run_check","check_name":"end_to_end"}
+  {"action_type":"rollback_deploy","service":"worker"}
+  {"action_type":"submit_hypothesis","hypothesis":{"root_cause":"bad_worker_deploy","affected_services":["worker"],"confidence":0.7,"recommended_next_action":"rollback_deploy"}}
+  {"action_type":"declare_resolved"}
+
+The 11 valid action_type values are:
+  query_logs, query_metrics, query_dependencies, query_deploys,
+  rollback_deploy, restart_service, isolate_service, run_check,
+  submit_hypothesis, escalate, declare_resolved.
+
+Services: api-gateway / cache / database / worker (no others).
+metric in {cpu, error_rate, latency} (no others).
+check_name in {database_recovery, end_to_end} (no others).
 
 A successful episode looks like: gather evidence -> submit_hypothesis -> rollback ->
 restart -> both run_checks pass -> declare_resolved. Wrong rollback / premature
@@ -819,25 +1120,47 @@ else:
     print(f"Holdout: {len(HOLDOUT_SCENARIOS)} scenarios")
 
     # Detect what models we have
-    has_grpo = Path("outputs/grpo_final/adapter_model.safetensors").exists()
-    has_sft  = Path("outputs/sft_final/adapter_model.safetensors").exists()
+    has_grpo = Path("outputs/qwen25_7b_grpo_final/adapter_model.safetensors").exists()
+    has_sft  = Path("outputs/qwen25_7b_sft_final/adapter_model.safetensors").exists()
     print(f"SFT artifact: {'✓' if has_sft else '✗'}   GRPO artifact: {'✓' if has_grpo else '✗'}")
+    ACTIVE_ADAPTER_DIR = Path("outputs/qwen25_7b_grpo_final") if has_grpo else Path("outputs/qwen25_7b_sft_final")
 
-    # Switch active model to inference mode (whichever was last trained)
-    FastLanguageModel.for_inference(model)
+    def load_local_adapter(adapter_dir: Path):
+        from peft import PeftModel
+
+        loaded_model, loaded_tokenizer = FastLanguageModel.from_pretrained(
+            model_name="unsloth/Qwen2.5-7B-Instruct-bnb-4bit",
+            max_seq_length=MAX_SEQ_LEN,
+            load_in_4bit=True,
+            dtype=None,
+        )
+        loaded_model = PeftModel.from_pretrained(
+            loaded_model,
+            str(adapter_dir),
+            is_trainable=False,
+        )
+        FastLanguageModel.for_inference(loaded_model)
+        return loaded_model, loaded_tokenizer
+
+    if "model" in globals() and "tokenizer" in globals():
+        active_model, active_tokenizer = model, tokenizer
+        FastLanguageModel.for_inference(active_model)
+        print("✓ Using in-memory model/tokenizer from earlier notebook cells")
+    elif ACTIVE_ADAPTER_DIR.exists() and (ACTIVE_ADAPTER_DIR / "adapter_model.safetensors").exists():
+        active_model, active_tokenizer = load_local_adapter(ACTIVE_ADAPTER_DIR)
+        print(f"✓ Loaded active adapter from {ACTIVE_ADAPTER_DIR}")
+    else:
+        raise RuntimeError(
+            "\n  No local adapter was found for eval.\n"
+            "  FIX: run Cell 6 (SFT) or Cell 9 (GRPO) first so outputs exist on disk.\n"
+        )
 
     # Try to load SFT-only as a second model for comparison.
     # If it OOMs or any other error, we skip the SFT-only row.
     sft_only_model = None
     if has_sft and has_grpo:
         try:
-            sft_only_model, _ = FastLanguageModel.from_pretrained(
-                model_name="outputs/sft_final",
-                max_seq_length=MAX_SEQ_LEN,
-                load_in_4bit=True,
-                dtype=None,
-            )
-            FastLanguageModel.for_inference(sft_only_model)
+            sft_only_model, _ = load_local_adapter(Path("outputs/qwen25_7b_sft_final"))
             print("✓ Loaded SFT-only adapter for comparison")
         except Exception as exc:
             # Catches OOM, ImportError (peft/transformers mismatch on tensor-parallel
@@ -858,19 +1181,19 @@ else:
         except: return None
 
     def lm_action(prompt, lm, max_new=120):
-        ids = tokenizer.apply_chat_template(
+        ids = active_tokenizer.apply_chat_template(
             [{"role": "system", "content": SFT_SYSTEM_PROMPT},
              {"role": "user", "content": prompt}],
             tokenize=True, add_generation_prompt=True, return_tensors="pt",
         ).to(lm.device)
         out = lm.generate(ids, max_new_tokens=max_new, do_sample=False,
-                          pad_token_id=tokenizer.eos_token_id)
-        text = tokenizer.decode(out[0][ids.shape[1]:], skip_special_tokens=True)
+                          pad_token_id=active_tokenizer.eos_token_id)
+        text = active_tokenizer.decode(out[0][ids.shape[1]:], skip_special_tokens=True)
         return _extract_json(text) or {"action_type": "escalate"}
 
     def run_lm(scenario_id, seed, lm, max_steps=15):
         env = UnifiedIncidentEnvironment()
-        obs = env.reset(scenario_id=scenario_id)
+        obs = env.reset(scenario_id=scenario_id, seed=seed)
         for _ in range(max_steps):
             d = lm_action(obs.prompt_text or "", lm)
             try: action = UnifiedIncidentAction(**d)
@@ -881,7 +1204,7 @@ else:
 
     def run_callable(scenario_id, seed, policy, max_steps=15):
         env = UnifiedIncidentEnvironment()
-        obs = env.reset(scenario_id=scenario_id)
+        obs = env.reset(scenario_id=scenario_id, seed=seed)
         for _ in range(max_steps):
             obs = env.step(policy(env, obs))
             if obs.done: break
@@ -940,7 +1263,7 @@ else:
                 "steps": obs.tick_count}
 
     # Determine final model label based on what was trained
-    final_model_label = "qwen25-3b-grpo" if has_grpo else "qwen25-3b-sft"
+    final_model_label = "qwen25-7b-grpo" if has_grpo else "qwen25-7b-sft"
 
     results = []
     for sid in HOLDOUT_SCENARIOS:
@@ -950,8 +1273,8 @@ else:
             results.append(_row("heuristic",         sid, seed, run_callable(sid, seed, heuristic_policy)))
             results.append(_row("scripted_optimal", sid, seed, run_callable(sid, seed, scripted_for(sid))))
             if sft_only_model is not None:
-                results.append(_row("qwen25-3b-sft-only", sid, seed, run_lm(sid, seed, sft_only_model)))
-            results.append(_row(final_model_label,    sid, seed, run_lm(sid, seed, model)))
+                results.append(_row("qwen25-7b-sft-only", sid, seed, run_lm(sid, seed, sft_only_model)))
+            results.append(_row(final_model_label,    sid, seed, run_lm(sid, seed, active_model)))
 
     results_df = pd.DataFrame(results)
     EVAL_CSV.parent.mkdir(parents=True, exist_ok=True)
@@ -968,7 +1291,7 @@ from pathlib import Path
 import matplotlib.pyplot as plt
 import pandas as pd
 
-results_df = pd.read_csv("eval/results/comparison_raw.csv")
+results_df = pd.read_csv("eval/results/qwen25_7b_comparison_raw.csv")
 holdout = json.load(open("eval/holdout_basic.json"))
 HOLDOUT_SCENARIOS = holdout["scenario_ids"]
 
@@ -979,25 +1302,30 @@ summary = results_df.groupby("policy").agg(
     p75=("final_score", lambda x: x.quantile(0.75)),
     resolved_rate=("incident_resolved", "mean"),
 ).round(3).sort_values("mean")
-summary.to_csv("eval/results/comparison_summary.csv")
+summary.to_csv("eval/results/qwen25_7b_comparison_summary.csv")
 print(summary)
 
 fig, ax = plt.subplots(figsize=(9, 5))
 order = summary.index.tolist()
+# Clip yerr to >= 0: when a policy has tail outliers the mean can fall
+# below the 25th percentile, producing a negative `mean - p25` that
+# matplotlib rejects. Clipping collapses the impossible side to zero.
+yerr_lo = (summary["mean"] - summary["p25"]).clip(lower=0)
+yerr_hi = (summary["p75"] - summary["mean"]).clip(lower=0)
 ax.bar(order, summary["mean"],
-       yerr=[summary["mean"] - summary["p25"], summary["p75"] - summary["mean"]],
+       yerr=[yerr_lo, yerr_hi],
        capsize=5, color="#3a86ff")
 ax.axhline(0.65, ls="--", color="gray", alpha=0.5, label="heuristic floor (0.65)")
 ax.axhline(0.80, ls="--", color="gray", alpha=0.5, label="heuristic ceiling (0.80)")
 ax.axhline(0.90, ls="--", color="green", alpha=0.5, label="scripted reference (0.90)")
 ax.set_ylabel("Final score (5-component composite)")
 ax.set_xlabel("Policy")
-ax.set_title("sre-gym Triage holdout eval (12 scenarios × 3 seeds)")
+ax.set_title("sre-gym Triage holdout eval (Qwen2.5-7B, 12 scenarios × 3 seeds)")
 ax.set_ylim(0, 1.0)
 ax.legend(loc="upper left", fontsize=8)
 plt.xticks(rotation=20, ha="right")
 plt.tight_layout()
-plt.savefig("eval/results/comparison_hero.png", dpi=150)
+plt.savefig("eval/results/qwen25_7b_comparison_hero.png", dpi=150)
 plt.show()
 
 # Per-template plot — uses only the policies actually present in the results
@@ -1016,30 +1344,93 @@ ax.set_ylabel("Mean final_score")
 ax.legend(fontsize=8)
 ax.set_title("Per-template mean score by policy")
 plt.tight_layout()
-plt.savefig("eval/results/comparison_per_template.png", dpi=150)
+plt.savefig("eval/results/qwen25_7b_comparison_per_template.png", dpi=150)
 plt.show()
 
 # %% [markdown]
-# ## Cell 12 — Package artifacts for download
+# ## Cell 12 — Push the final adapter to Hugging Face Hub
+#
+# Paste your write-enabled `HF_TOKEN` manually below. This cell prefers the
+# trainer-native `push_to_hub()` path when a trainer object is still in memory,
+# and otherwise falls back to reloading the saved adapter from disk.
+
+# %%
+from pathlib import Path
+
+from unsloth import FastLanguageModel
+
+HF_TOKEN = ""
+HUB_MODEL_ID = "your-username/sre-gym-triage-qwen25-7b-grpo"
+COMMIT_MESSAGE = "Qwen2.5-7B GRPO trained on sre-gym Triage"
+MAX_SEQ_LEN = 2048
+
+PUSH_SOURCE = Path("outputs/qwen25_7b_grpo_final")
+if not (PUSH_SOURCE / "adapter_model.safetensors").exists():
+    PUSH_SOURCE = Path("outputs/qwen25_7b_sft_final")
+
+if not HF_TOKEN.strip():
+    raise ValueError("Paste your HF token into HF_TOKEN before running this cell.")
+if not (PUSH_SOURCE / "adapter_model.safetensors").exists():
+    raise FileNotFoundError(
+        "No saved adapter found. Run Cell 6 (SFT) or Cell 9 (GRPO) before pushing."
+    )
+
+print(f"Pushing to: {HUB_MODEL_ID}")
+push_ok = False
+trainer_for_push = globals().get("grpo_trainer") or globals().get("sft_trainer")
+
+if trainer_for_push is not None:
+    try:
+        trainer_for_push.push_to_hub(
+            repo_id=HUB_MODEL_ID,
+            token=HF_TOKEN,
+            commit_message=COMMIT_MESSAGE,
+        )
+        print(f"Pushed via trainer: https://huggingface.co/{HUB_MODEL_ID}")
+        push_ok = True
+    except Exception as exc:
+        print(f"Trainer push failed: {exc}")
+        print(f"Falling back to adapter push from: {PUSH_SOURCE}")
+
+if not push_ok:
+    from peft import PeftModel
+
+    model_for_push, tokenizer_for_push = FastLanguageModel.from_pretrained(
+        model_name="unsloth/Qwen2.5-7B-Instruct-bnb-4bit",
+        max_seq_length=MAX_SEQ_LEN,
+        load_in_4bit=True,
+        dtype=None,
+    )
+    model_for_push = PeftModel.from_pretrained(
+        model_for_push,
+        str(PUSH_SOURCE),
+        is_trainable=False,
+    )
+    model_for_push.push_to_hub(HUB_MODEL_ID, token=HF_TOKEN, commit_message=COMMIT_MESSAGE)
+    tokenizer_for_push.push_to_hub(HUB_MODEL_ID, token=HF_TOKEN)
+    print(f"Pushed via adapter fallback: https://huggingface.co/{HUB_MODEL_ID}")
+
+# %% [markdown]
+# ## Cell 13 — Package artifacts for download
 #
 # Tars the final artifacts so you can download a single file from JupyterLab's
-# file browser. Right-click `artifacts.tar.gz` → Download.
+# file browser. Right-click `artifacts_qwen25_7b.tar.gz` → Download.
 
 # %%
 import subprocess
 from pathlib import Path
 
 # Only include directories that actually exist (handles SFT-only / GRPO-only runs)
-to_archive = [p for p in ["outputs/sft_final", "outputs/grpo_final", "eval/results"]
+to_archive = [p for p in ["outputs/qwen25_7b_sft_final", "outputs/qwen25_7b_grpo_final", "eval/results"]
               if Path(p).exists()]
 
 if not to_archive:
     print("⚠ Nothing to archive — no SFT, GRPO, or eval results found")
 else:
-    subprocess.check_call(["tar", "czf", "artifacts.tar.gz"] + to_archive)
-    print(f"\n✓ Artifacts packaged: artifacts.tar.gz")
+    subprocess.check_call(["tar", "czf", "artifacts_qwen25_7b.tar.gz"] + to_archive)
+    print(f"\n✓ Artifacts packaged: artifacts_qwen25_7b.tar.gz")
     print(f"\nContents:")
     for p in to_archive:
         print(f"  {p}")
-    print(f"\nRight-click artifacts.tar.gz in JupyterLab's file panel → Download.")
+    print(f"\nRight-click artifacts_qwen25_7b.tar.gz in JupyterLab's file panel → Download.")
     print("Then upload to your private HF repo.")

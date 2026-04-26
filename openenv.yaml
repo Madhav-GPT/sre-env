@@ -101,27 +101,22 @@ reward:
   docs: docs/REWARD_DESIGN.md
 
 training:
-  status: pending
-  pipeline: notebooks/01_basic_train_grpo_unsloth.ipynb
-  comparison: notebooks/02_basic_eval_comparison.ipynb
+  status: executed                         # SFT + GRPO end-to-end run completed
+  base_model: unsloth/Qwen2.5-7B-Instruct-bnb-4bit
+  pipeline: notebooks/01_triage_train_grpo_qwen25_7b.ipynb
+  comparison: notebooks/02_triage_eval_compare_all.ipynb
   pool_server: coliseum/                  # parallel-rollout lease pool for GRPO trainers
-  expected_artifacts:
-    - eval/results/comparison_hero.png
-    - dakshdoesdev/sre-gym-qwen25-3b-grpo  (HF Hub adapter)
-  current_artifacts: []                   # nothing committed until a real run lands
+  current_artifacts:
+    - outputs/qwen25_7b_sft_final/        # SFT checkpoint, eval perplexity 1.755
+    - outputs/qwen25_7b_grpo_final/       # GRPO checkpoint
+    - eval/results/qwen25_7b_comparison_raw.csv
+    - eval/results/qwen25_7b_comparison_hero.png
   trajectory_corpus:
-    seed_combined_jsonl_rows: 21
-    templates_with_teacher_data: 6        # of 12 -- the 6 round-2 templates have none yet
-    templates_without_teacher_data:
-      - auth_token_expiry
-      - dep_degradation
-      - memory_leak_oom
-      - migration_lock
-      - network_partition
-      - rate_limit_retry_storm
+    seed_v2_120_jsonl_rows: 120           # 72 expert + 24 mediocre + 24 failure
+    templates_covered: 12                 # all 12 Triage templates have ≥5 episodes
 
 huggingface:
-  space_id: Madhav189/sre-env             # current authoritative HF Space
-  github_repo: dakshdoesdev/sre-enginnerllm  # repo name has a known typo (enginner)
+  space_id: Madhav189/sre-env             # canonical HF Space
+  github_repo: Madhav-GPT/sre-env         # canonical GitHub
   sdk: docker
   hardware: cpu-basic

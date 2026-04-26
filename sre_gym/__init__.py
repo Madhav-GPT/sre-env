@@ -26,9 +26,11 @@ respective ``python -m sre_gym.<tier> run ...`` CLIs.  Only Basic exposes a
 live HTTP environment with /reset + /step routes; Advanced and Max are
 in-process orchestrators.
 
-Training (notebooks/01_basic_train_grpo_unsloth.ipynb) is **not committed to
-this repo**.  Run it externally on Colab A100 and publish the resulting
-adapter + comparison plots to ``eval/results/``.
+Training pipeline lives in
+``notebooks/01_triage_train_grpo_qwen25_7b.ipynb`` (Qwen2.5-7B-Instruct,
+Unsloth + TRL SFT → GRPO, target A100 80GB).  The eval comparison sweep
+runs in cell 10 of the same notebook and writes results to
+``eval/results/qwen25_7b_comparison_*``.
 
 The dimensional-escalation insight: each tier escalates a *different* axis,
 not just scenario count.  See ``docs/ARCHITECTURE.md`` for the full rationale.

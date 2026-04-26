@@ -161,28 +161,26 @@ That 0.20 of headroom is what GRPO trains *into*. If we hadn't hardened the ceil
 
 ---
 
-## 8. Training pipeline (Basic)
+## 8. Training pipeline (Triage)
 
-The full pipeline sits in [`notebooks/01_basic_train_grpo_unsloth.ipynb`](../notebooks/01_basic_train_grpo_unsloth.ipynb). Four stages:
+The full pipeline sits in [`notebooks/01_triage_train_grpo_qwen25_7b.ipynb`](../notebooks/01_triage_train_grpo_qwen25_7b.ipynb). Three stages:
 
-1. **Seed dataset build** — ~200 trajectories from a teacher (Claude Opus / Llama-3.3-70B). Saved to `train/data/seed_combined.jsonl`. ~$15 of API spend, ~2h wall-clock.
-2. **SFT cold start** — Unsloth-loaded Qwen2.5-3B in 4-bit, LoRA r=64 on Q/K/V/O + MLP, 500 steps batched 4. ~3h on A100.
-3. **GRPO online** — load the SFT adapter, boot the [Coliseum pool server](../coliseum/README.md) on the same VM, run 800 steps with K=4 rollouts per scenario. ~6h on A100.
-4. **Eval sweep** — 36 episodes (3 per template × 12 templates) against the held-out variant set. Plot per-template reward distributions on shared axes. ~30min.
+1. **Build SFT corpus** — `train/build_corpus.py` produces a 120-episode trajectory corpus from teacher trajectories (Claude Opus, Llama-3.3-70B via Groq, scripted-optimal) stratified 72 expert / 24 mediocre / 24 failure. Saved to `train/data/seed_v2_120.jsonl`.
+2. **SFT cold start** — Unsloth-loaded Qwen2.5-7B-Instruct in 4-bit, LoRA r=32 on Q/K/V/O + MLP, 50 steps × batch 16, lr=5e-5 with cosine schedule. ~7 min on A100 80GB. Eval perplexity 1.755 (healthy `[1.5, 3.0]` band).
+3. **GRPO online** — load the SFT adapter, run 40 steps with K=2 rollouts per scenario via TRL's `GRPOTrainer`. Reward = composite + scenario-aware first-action bonus. ~50 min on A100 80GB (transformers fallback path; vLLM path is ~3× faster). Saves to `outputs/qwen25_7b_grpo_final/`.
+4. **Eval sweep** — 5 policies × 12 scenarios × 3 seeds = 180 episodes. Writes `eval/results/qwen25_7b_comparison_*.csv` + `*.png`. ~25 min.
 
-End-to-end: ~12h on a single A100, ~$15 of API spend. That's the $30-of-HF-credits budget the design targets.
+End-to-end: ~2-3h on a single A100 80GB, ~$5–8 of HF compute credits.
 
 ---
 
-## 9. What "Basic tier complete" looks like at submission
+## 9. What "Triage tier complete" looks like at submission
 
 - ✅ 12 templates × 5 procgen variants = 72 scenarios live
-- ✅ 36+ tests passing (`pytest unified_incident_env/tests -q`)
+- ✅ Pytest suite green
 - ✅ `openenv validate .` green
-- ✅ HF Space deployed at `dakshdoesdev-sre-gym.hf.space`
-- ✅ GRPO Colab notebook runs end-to-end
-- ✅ Eval comparison notebook produces shared-axes reward plots
-- ✅ Trained Qwen2.5-3B adapter pushed to `dakshdoesdev/sre-gym-qwen25-3b-grpo`
-- ✅ Comparison-table row shows trained 3B beating Claude Haiku on held-out scenarios
-
-The last bullet is the entire pitch in one cell of one notebook.
+- ✅ HF Space deployed at `Madhav189-sre-env.hf.space`
+- ✅ Training notebook runs end-to-end on A100 80GB
+- ✅ Eval comparison cell produces hero bar + per-template chart
+- ✅ Trained Qwen2.5-7B adapter saved to `outputs/qwen25_7b_grpo_final/`
+- ✅ Honest comparison-table row (`mean=0.379`) showing the model lifts 11% above random but stays below the heuristic plateau at 0.704

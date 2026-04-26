@@ -200,7 +200,7 @@ The OpenEnv hackathon's published rubric weights are: Innovation 40, Storytellin
 |---|---|
 | Innovation 40% | The dimensional-escalation tier story, defensible across compute / horizon / realism axes. |
 | Storytelling 30% | This document + `README.md` first paragraph + 12-template skill table + reference traces in YAMLs. |
-| Reward curves 20% | `eval/results/` (populated by `02_basic_eval_comparison.ipynb`) + `train/data/eval_sweep_baselines.jsonl` reference numbers. |
-| Reward/Pipeline 10% | Composable rubric in `unified_incident_env/server/grader.py` + GRPO loop in `01_basic_train_grpo_unsloth.ipynb`. |
+| Reward curves 20% | `eval/results/qwen25_7b_comparison_*` (populated by cell 10/11 of `01_triage_train_grpo_qwen25_7b.ipynb`) + `train/data/eval_sweep_baselines.jsonl` reference numbers. |
+| Reward/Pipeline 10% | Composable rubric in `unified_incident_env/server/grader.py` + SFT → GRPO loop in `01_triage_train_grpo_qwen25_7b.ipynb`. |
 
 Weight by weight, the artifact you'd hand a judge to defend that score is in this repo.
